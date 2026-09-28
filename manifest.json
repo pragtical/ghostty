@@ -1,0 +1,65 @@
+{
+  "addons": [
+    {
+      "id": "ghostty",
+      "name": "Ghostty Terminal",
+      "description": "Terminal tabs and drawer for Pragtical, using libghostty-vt through LuaJIT FFI.",
+      "version": "0.1.0",
+      "mod-version": "3",
+      "type": "plugin",
+      "path": "plugins/ghostty",
+      "files": [
+        {
+          "arch": "x86_64-linux",
+          "url": "https://github.com/pragtical/ghostty/releases/download/latest/ghostty-vt.x86_64-linux.so",
+          "checksum": "SKIP"
+        },
+        {
+          "arch": "x86_64-linux",
+          "url": "https://github.com/pragtical/ghostty/releases/download/latest/ghostty-pty.x86_64-linux.so",
+          "checksum": "SKIP"
+        },
+        {
+          "arch": "aarch64-linux",
+          "url": "https://github.com/pragtical/ghostty/releases/download/latest/ghostty-vt.aarch64-linux.so",
+          "checksum": "SKIP"
+        },
+        {
+          "arch": "aarch64-linux",
+          "url": "https://github.com/pragtical/ghostty/releases/download/latest/ghostty-pty.aarch64-linux.so",
+          "checksum": "SKIP"
+        },
+        {
+          "arch": "x86_64-darwin",
+          "url": "https://github.com/pragtical/ghostty/releases/download/latest/ghostty-vt.x86_64-darwin.so",
+          "checksum": "SKIP"
+        },
+        {
+          "arch": "x86_64-darwin",
+          "url": "https://github.com/pragtical/ghostty/releases/download/latest/ghostty-pty.x86_64-darwin.so",
+          "checksum": "SKIP"
+        },
+        {
+          "arch": "aarch64-darwin",
+          "url": "https://github.com/pragtical/ghostty/releases/download/latest/ghostty-vt.aarch64-darwin.so",
+          "checksum": "SKIP"
+        },
+        {
+          "arch": "aarch64-darwin",
+          "url": "https://github.com/pragtical/ghostty/releases/download/latest/ghostty-pty.aarch64-darwin.so",
+          "checksum": "SKIP"
+        },
+        {
+          "arch": "x86_64-windows",
+          "url": "https://github.com/pragtical/ghostty/releases/download/latest/ghostty-vt.x86_64-windows.dll",
+          "checksum": "SKIP"
+        },
+        {
+          "arch": "x86_64-windows",
+          "url": "https://github.com/pragtical/ghostty/releases/download/latest/ghostty-pty.x86_64-windows.dll",
+          "checksum": "SKIP"
+        }
+      ]
+    }
+  ]
+}

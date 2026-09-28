@@ -1,0 +1,13 @@
+/build*/
+/package*/
+/artifacts/
+/subprojects/.wraplock
+/subprojects/packagecache/
+/subprojects/ghostty-*/
+/.cache/
+/.test-pragtical/
+/plugins/ghostty/*.so*
+/plugins/ghostty/*.dylib
+/plugins/ghostty/*.dll
+__pycache__/
+/nvim.log

@@ -1,0 +1,6 @@
+[wrap-file]
+directory = ghostty-12752b2ac1bb05ce53402ed8c853ed1f96eef0b1
+source_url = https://codeload.github.com/ghostty-org/ghostty/tar.gz/12752b2ac1bb05ce53402ed8c853ed1f96eef0b1
+source_filename = ghostty-12752b2ac1bb05ce53402ed8c853ed1f96eef0b1.tar.gz
+source_hash = 4a5d516c161b5543204dd9ce923b841b049ad9d46614b6bd28ee714148d085ac
+patch_directory = ghostty

@@ -1,0 +1,8 @@
+BasedOnStyle: LLVM
+ColumnLimit: 80
+IndentWidth: 2
+SortIncludes: Never
+AllowShortFunctionsOnASingleLine: None
+AllowShortIfStatementsOnASingleLine: Never
+AllowShortLoopsOnASingleLine: false
+SeparateDefinitionBlocks: Always

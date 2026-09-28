@@ -1,0 +1,6 @@
+plugins/ghostty/ffi_defs.lua
+subprojects/
+build*/
+package*/
+artifacts/
+.test-pragtical/

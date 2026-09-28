@@ -1,0 +1,3 @@
+option('arch_tuple', type: 'string', value: '', description: 'Pragtical architecture tuple')
+option('data_dir', type: 'string', value: 'share/pragtical', description: 'Pragtical data directory')
+option('zig', type: 'string', value: 'zig', description: 'Zig 0.16.0 executable')
