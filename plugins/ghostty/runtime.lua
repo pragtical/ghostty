@@ -56,6 +56,8 @@ end
 M.C, M.path = M.load("ghostty-vt", config.runtime_path, {
   "ghostty_terminal_new",
   "ghostty_terminal_grid_ref",
+  "ghostty_terminal_point_from_grid_ref",
+  "ghostty_terminal_select_word",
   "ghostty_render_state_update",
   "ghostty_render_state_row_cells_get_multi",
   "ghostty_key_encoder_encode",

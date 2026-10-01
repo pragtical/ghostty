@@ -19,27 +19,49 @@ local function normalize(a, b)
   return a, b
 end
 
-function selection.start(state, col, row)
+---Start a drag, optionally with an inclusive range already selected.
+---@param state table
+---@param col integer
+---@param row integer
+---@param end_col? integer
+---@param end_row? integer
+function selection.start(state, col, row, end_col, end_row)
   state.active = true
   state.anchor = { col = col, row = row }
-  state.cursor = { col = col, row = row }
-  state.dragged = false
+  state.cursor = { col = end_col or col, row = end_row or row }
+  state.dragged = end_col ~= nil
+  state.initial = end_col and { state.anchor, state.cursor } or nil
 end
 
 function selection.update(state, col, row)
   if not state.active then
     return false
   end
-  if state.cursor and state.cursor.col == col and state.cursor.row == row then
+  local cursor = { col = col, row = row }
+  if state.initial then
+    local first, last = state.initial[1], state.initial[2]
+    local left = normalize(first, cursor)
+    state.anchor = left == cursor and last or first
+    if left == first then
+      local _, right = normalize(last, cursor)
+      cursor = right
+    end
+  end
+  if
+    state.cursor
+    and state.cursor.col == cursor.col
+    and state.cursor.row == cursor.row
+  then
     return false
   end
-  state.cursor = { col = col, row = row }
+  state.cursor = cursor
   state.dragged = true
   return true
 end
 
 function selection.finish(state)
   state.active = false
+  state.initial = nil
   if not state.dragged then
     state.anchor = nil
     state.cursor = nil

@@ -10,6 +10,7 @@ int main(void) {
   SIZE(GhosttyRenderStateColors);
   SIZE(GhosttyGridRef);
   SIZE(GhosttySelection);
+  SIZE(GhosttyTerminalSelectWordOptions);
   SIZE(GhosttyPoint);
   SIZE(GhosttyTerminalScrollbar);
   SIZE(GhosttyTerminalScrollViewport);
@@ -25,6 +26,8 @@ int main(void) {
   OFFSET(GhosttyStyle, fg_color);
   OFFSET(GhosttyRenderStateColors, palette);
   OFFSET(GhosttySelection, end);
+  OFFSET(GhosttyTerminalSelectWordOptions, ref);
+  OFFSET(GhosttyTerminalSelectWordOptions, boundary_codepoints);
   OFFSET(GhosttyFormatterTerminalOptions, selection);
   OFFSET(GhosttyPoint, value);
   return 0;

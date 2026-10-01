@@ -630,6 +630,14 @@ function TerminalView:on_mouse_pressed(button, x, y, clicks)
   if button ~= "left" then
     return false
   end
+  if clicks == 2 then
+    local first, last = self.terminal:word_range(col, row)
+    if first then
+      selection.start(self.selection, first.col, first.row, last.col, last.row)
+      core.redraw = true
+      return true
+    end
+  end
   selection.start(self.selection, col, row)
   core.redraw = true
   return true

@@ -38,8 +38,8 @@ New sessions start in the current project directory. Hiding the drawer keeps
 its process running. Successful shells close automatically; failed sessions
 stay open so you can read their output.
 
-- Drag to select text. Hold Shift to select or scroll when a terminal program
-  captures mouse input.
+- Drag to select text, or double-click to select a word and drag to extend it.
+  Hold Shift to select or scroll when a terminal program captures mouse input.
 - Use the mouse wheel or drag the right scrollbar to browse scrollback. The
   scrollbar appears when the terminal has saved lines above the visible screen.
 - Ctrl-click links or `path:line:column` references to open them; use Cmd-click

@@ -742,6 +742,51 @@ local function point(col, row)
   return p
 end
 
+---Find Ghostty's word bounds, clipped to the visible viewport.
+---@param col integer One-based viewport column.
+---@param row integer One-based viewport row.
+---@return table? first Inclusive one-based row and column.
+---@return table? last Inclusive one-based row and column.
+function Terminal:word_range(col, row)
+  if self.closed then
+    return
+  end
+  local options = sized("GhosttyTerminalSelectWordOptions")
+  options.ref.size = ffi.sizeof("GhosttyGridRef")
+  if
+    C.ghostty_terminal_grid_ref(self.terminal, point(col, row), options.ref)
+      ~= 0
+  then
+    return
+  end
+  local selected = sized("GhosttySelection")
+  local result = C.ghostty_terminal_select_word(
+    self.terminal, options, selected
+  )
+  if result == C.GHOSTTY_NO_VALUE then
+    return
+  end
+  check(result)
+  local bounds, coord = {}, ffi.new("GhosttyPointCoordinate")
+  for i = 1, 2 do
+    result = C.ghostty_terminal_point_from_grid_ref(
+      self.terminal,
+      selected[i == 1 and "start" or "end"],
+      C.GHOSTTY_POINT_TAG_VIEWPORT,
+      coord
+    )
+    if result == C.GHOSTTY_NO_VALUE then
+      bounds[i] = { col = 1, row = 1 } -- Above the viewport.
+    else
+      check(result)
+      bounds[i] = coord.y >= self.rows
+          and { col = self.cols, row = self.rows }
+        or { col = tonumber(coord.x) + 1, row = tonumber(coord.y) + 1 }
+    end
+  end
+  return bounds[1], bounds[2]
+end
+
 ---Format an inclusive selection using one-based viewport cell coordinates.
 ---@return string? text
 function Terminal:copy_selection(c1, r1, c2, r2)

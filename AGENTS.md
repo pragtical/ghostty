@@ -100,6 +100,12 @@ Plugin-manager `latest` URLs require a successful versioned release.
 - Read rendered cell text with Ghostty's `GRAPHEMES_UTF8` query. Keep the Lua
   buffer owner alive while C writes to its pointer, and grow the buffer on
   `GHOSTTY_OUT_OF_SPACE`. Selection text comes from Ghostty's formatter.
+- Double-click word bounds come from `ghostty_terminal_select_word` using
+  Ghostty's default boundaries, which keep underscores and paths together.
+  Convert grid references immediately to viewport cells and clip wrapped words
+  at the viewport edges. Keep the initial word selected while dragging in either
+  direction, and keep selection active until release so Shift-selection never
+  sends part of its gesture to the terminal application.
 - Fetch raw cells once per row with `CELLS_RAW`; the borrowed pointer must not
   survive a render-state update. Batch style/text with `row_cells_get_multi`.
   Keep optional foreground/background queries separate: an absent color stops

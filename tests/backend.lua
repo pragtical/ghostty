@@ -762,6 +762,47 @@ it(
   end
 )
 
+it("selects wrapped words within the viewport using Ghostty", function()
+  with_terminal({ command = false, cols = 24, rows = 4 }, function(t)
+    t:feed("foo_bar/baz  é界 z\r\nlast")
+    for _, col in ipairs { 2, 4, 8 } do
+      local first, last = t:word_range(col, 1)
+      equal(first.col, 1)
+      equal(last.col, 11)
+      equal(t:copy_selection(first.col, first.row, last.col, last.row),
+        "foo_bar/baz")
+    end
+    local first, last = t:word_range(16, 1) -- Wide-character spacer.
+    equal(first.col, 14)
+    equal(last.col, 16)
+    equal(t:copy_selection(first.col, first.row, last.col, last.row), "é界")
+    first, last = t:word_range(18, 1)
+    equal(first.col, 18)
+    equal(last.col, 18)
+    equal(t:word_range(24, 4), nil) -- Unwritten cells have no word.
+    t:close()
+    equal(t:word_range(1, 1), nil)
+  end)
+  with_terminal({ command = false, cols = 4, rows = 2 }, function(t)
+    t:feed("abcdefghijkl")
+    local first, last = t:word_range(2, 1)
+    equal(first.col, 1)
+    equal(first.row, 1)
+    equal(last.col, 4)
+    equal(last.row, 2)
+    equal(t:copy_selection(first.col, first.row, last.col, last.row),
+      "efghijkl") -- The beginning of the word is above the viewport.
+    t:scroll_to(0)
+    first, last = t:word_range(2, 1)
+    equal(first.col, 1)
+    equal(first.row, 1)
+    equal(last.col, 4)
+    equal(last.row, 2)
+    equal(t:copy_selection(first.col, first.row, last.col, last.row),
+      "abcdefgh") -- The end of the word is below the viewport.
+  end)
+end)
+
 it("reuses callbacks and releases terminal resources repeatedly", function()
   for _ = 1, 150 do
     local t = backend.new { command = false }

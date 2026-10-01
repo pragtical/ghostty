@@ -235,7 +235,7 @@ test.describe("Ghostty Pragtical integration", function()
     local x, y, w, h = bar:get_track_rect()
     x = x + w / 2
     keymap.modkeys[view.options.click_modifier] = true
-    view:on_mouse_pressed("left", x, y + 1, 1)
+    view:on_mouse_pressed("left", x, y + 1, 2)
     view:on_mouse_moved(x, y + h / 2, 0, h / 2)
     view:on_mouse_released("left", x, y + h / 2)
     view:update()
@@ -414,6 +414,157 @@ test.describe("Ghostty Pragtical integration", function()
       test.ok(command.perform("ghostty:copy-selection"))
       test.equal(system.get_clipboard(), "é界")
       system.set_clipboard(previous or "")
+    end
+  )
+
+  test.it("selects the word under the cursor on double click", function(c)
+    local view = c.view
+    view.terminal:feed("foo bar/baz  qux")
+    view:update()
+
+    ---@param col integer
+    ---@param clicks integer
+    local function press(col, clicks)
+      local x = view.position.x + (col - 0.5) * view.cell_width
+      local y = view.position.y + view.cell_height / 2
+      return view:on_mouse_pressed("left", x, y, clicks)
+    end
+
+    test.ok(press(2, 2)) -- Inside "foo".
+    local first, last = selection.range(view.selection)
+    test.equal(first.col, 1)
+    test.equal(last.col, 3)
+    test.ok(view.selection.active)
+    view:on_mouse_released("left", 0, 0)
+    test.ok(not view.selection.active)
+    test.ok(selection.has_selection(view.selection))
+
+    test.ok(press(6, 2)) -- Ghostty keeps paths together.
+    first, last = selection.range(view.selection)
+    test.equal(first.col, 5)
+    test.equal(last.col, 11)
+    view:on_mouse_released("left", 0, 0)
+
+    test.ok(press(9, 2)) -- Inside "baz".
+    first, last = selection.range(view.selection)
+    test.equal(first.col, 5)
+    test.equal(last.col, 11)
+    view:on_mouse_released("left", 0, 0)
+
+    test.ok(press(30, 2)) -- Unwritten cell: plain click, no selection.
+    test.ok(view.selection.active)
+    view:on_mouse_released("left", 0, 0)
+    test.ok(not selection.has_selection(view.selection))
+
+    test.ok(press(2, 3)) -- Higher click counts keep ordinary click behavior.
+    view:on_mouse_released("left", 0, 0)
+    test.ok(not selection.has_selection(view.selection))
+
+    test.ok(press(2, 1)) -- Single click still starts a drag selection.
+    test.ok(view.selection.active)
+    view:on_mouse_released("left", 0, 0)
+    test.ok(not selection.has_selection(view.selection))
+
+    view.terminal:feed("\r\n界ab\27[3G") -- Wide glyph and its spacer cell.
+    view:update()
+    local y = view.position.y + 1.5 * view.cell_height
+    local x = view.position.x + 1.5 * view.cell_width
+    test.ok(view:on_mouse_pressed("left", x, y, 2))
+    first, last = selection.range(view.selection)
+    test.equal(first.row, 2)
+    test.equal(first.col, 1)
+    test.equal(last.col, 4)
+    local previous = system.get_clipboard()
+    test.ok(command.perform("ghostty:copy-selection"))
+    test.equal(system.get_clipboard(), "界ab")
+    system.set_clipboard(previous or "")
+  end)
+
+  test.it("keeps modified link clicks ahead of word selection", function(c)
+    local view = c.view
+    view.terminal:feed("\27]8;;https://example.com\27\\link\27]8;;\27\\")
+    view:update()
+    local opened, old_open = nil, click.open
+
+    ---@param target table
+    click.open = function(target)
+      opened = target
+      return true
+    end
+
+    local ok, err = pcall(function()
+      keymap.modkeys[view.options.click_modifier] = true
+      local x = view.position.x + 1.5 * view.cell_width
+      local y = view.position.y + view.cell_height / 2
+      view:on_mouse_pressed("left", x, y, 2)
+      view:on_mouse_released("left", x, y)
+      test.equal(opened.target, "https://example.com")
+      test.ok(not selection.has_selection(view.selection))
+    end)
+    click.open = old_open
+    test.ok(ok, err)
+  end)
+
+  test.it("extends a double-click selection in either direction", function(c)
+    local view = c.view
+    view.terminal:feed("one foo_bar end x")
+    view:update()
+    local y = view.position.y + view.cell_height / 2
+    local x = view.position.x + 5.5 * view.cell_width
+    view:on_mouse_pressed("left", x, y, 2)
+    view:on_mouse_moved(x, y, 0, 0) -- Pointer jitter keeps the whole word.
+    local first, last = selection.range(view.selection)
+    test.equal(first.col, 5)
+    test.equal(last.col, 11)
+    view:on_mouse_moved(x + 8 * view.cell_width, y, 8 * view.cell_width, 0)
+    first, last = selection.range(view.selection)
+    test.equal(first.col, 5)
+    test.equal(last.col, 14)
+    view:on_mouse_moved(x - 4 * view.cell_width, y, -12 * view.cell_width, 0)
+    first, last = selection.range(view.selection)
+    test.equal(first.col, 2)
+    test.equal(last.col, 11)
+    view:on_mouse_moved(x, y, 4 * view.cell_width, 0)
+    first, last = selection.range(view.selection)
+    test.equal(first.col, 5)
+    test.equal(last.col, 11)
+    view:on_mouse_released("left", x, y)
+    test.ok(not view.selection.active)
+    x = view.position.x + 16.5 * view.cell_width
+    view:on_mouse_pressed("left", x, y, 2)
+    view:on_mouse_released("left", x, y)
+    first, last = selection.range(view.selection)
+    test.equal(first.col, 17) -- A one-cell word survives release.
+    test.equal(last.col, 17)
+  end)
+
+  test.it(
+    "keeps double click in terminal mouse input unless Shift is held",
+    function(c)
+      local view = c.view
+      view.terminal:feed("word more\27[?1003h\27[?1006h")
+      view:update()
+      local x = view.position.x + 1.5 * view.cell_width
+      local y = view.position.y + view.cell_height / 2
+      test.ok(view:on_mouse_pressed("left", x, y, 2))
+      view:on_mouse_released("left", x, y)
+      test.equal(sent(view), "\27[<0;2;1M\27[<0;2;1m")
+      test.ok(not selection.has_selection(view.selection))
+      keymap.modkeys.shift = true
+      test.ok(view:on_mouse_pressed("left", x, y, 2))
+      test.equal(sent(view), "")
+      keymap.modkeys.shift = nil
+      -- Releasing Shift during selection must not resume terminal events.
+      view:on_mouse_moved(x, y, 0, 0)
+      view:on_mouse_released("left", x, y)
+      test.equal(sent(view), "")
+      local first, last = selection.range(view.selection)
+      test.equal(first.col, 1)
+      test.equal(last.col, 4)
+      keymap.modkeys.shift = true
+      view:on_mouse_pressed("left", x, y, 2)
+      view:on_mouse_released("left", x, y)
+      test.equal(sent(view), "") -- Also consume release while Shift is held.
     end
   )
 
