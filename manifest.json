@@ -4,7 +4,7 @@
       "id": "ghostty",
       "name": "Ghostty Terminal",
       "description": "Terminal tabs and drawer for Pragtical, using libghostty-vt through LuaJIT FFI.",
-      "version": "0.1.0",
+      "version": "0.2.0",
       "mod-version": "3",
       "type": "plugin",
       "path": "plugins/ghostty",

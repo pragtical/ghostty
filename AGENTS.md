@@ -276,7 +276,7 @@ arrangement; upstream source does not belong in a vendor directory.
   `4a5d516c161b5543204dd9ce923b841b049ad9d46614b6bd28ee714148d085ac`.
 - The overlay identifies the VT library as `0.1.0-dev`. Upstream's application
   version remains `1.3.2-dev`; the library has its own version. This plugin's
-  version is `0.1.0` in both `meson.build` and `manifest.json`.
+  version is `0.2.0` in both `meson.build` and `manifest.json`.
 - `subprojects/packagefiles/ghostty/build-vt.py` checks the Zig version and runs
   `zig build` with `-Demit-lib-vt=true`, `-Demit-xcframework=false`,
   `-Doptimize=ReleaseFast`, `-Dtarget=...`, and `-Dcpu=baseline`.
@@ -786,10 +786,10 @@ also receives `SHA256SUMS`.
 - Publishing is serialized with concurrency group `ghostty-release`. Moving
   tags/branches are force-updated, and existing release assets are overwritten.
 
-The GitHub repository is `pragtical/ghostty`. A `v0.1.0` tag or manual dispatch
-with that tag will publish the prepared initial version. Keep `meson.build` and
-manifest versions aligned for later releases. Routine local validation does not
-require publishing anything.
+The GitHub repository is `pragtical/ghostty`. Push a `v<manifest version>` tag
+or dispatch the workflow with that tag to publish a release. Keep `meson.build`
+and manifest versions aligned. Routine local validation does not require
+publishing anything.
 
 Useful checks:
 
