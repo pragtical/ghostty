@@ -49,6 +49,12 @@ stay open so you can read their output.
   clearing the screen, scrolling, and running a command with
   `ghostty:spawn-agent`.
 
+If a program crashes or is killed with `Ctrl+\`, it can leave mouse reporting
+enabled, making clicks type escape codes at the shell prompt. Open the command
+palette with `Ctrl+Shift+P`, run **Ghostty: Reset**, then press Enter for a fresh
+prompt. Reset clears the screen and scrollback and restores terminal modes;
+the shell keeps running. Use it after returning to the shell.
+
 ## Fonts and colors
 
 The terminal uses Pragtical's code font, including its fallback fonts. For

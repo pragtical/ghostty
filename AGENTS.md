@@ -183,6 +183,12 @@ Plugin-manager `latest` URLs require a successful versioned release.
 - Use Ghostty's key, mouse, focus, and paste encoders. They implement application
   cursor modes, Kitty keyboard events, bracketed paste, and other terminal modes.
   Enter uses the encoder on Windows too.
+- `ghostty:reset` recovers from programs killed before restoring terminal modes.
+  Feed CAN followed by RIS to cancel incomplete control strings in both parsers
+  and reset Ghostty. Clear cached snapshots, mouse encoder state, selection, and
+  held input state; keep the PTY alive. Reset clears the screen and scrollback.
+  Do not reset automatically on Ctrl+\\: programs may handle or ignore SIGQUIT,
+  and the shell's lifetime does not tell us when a foreground job has exited.
 - Set the mouse encoder's `ANY_BUTTON_PRESSED` option for held physical buttons.
   Ghostty otherwise drops drags beyond the cell grid, including the partial-cell
   margin beside the scrollbar at some font sizes. Clear it for releases, passive

@@ -181,6 +181,41 @@ test.describe("Ghostty Pragtical integration", function()
     end
   )
 
+  test.it(
+    "resets a terminal without sending mouse reports to the shell",
+    function(c)
+      local view = c.view
+      view.terminal:feed("\27[?1049h\27[?1003h\27[?1006hbroken")
+      view:update()
+      local x, y = view.position.x + 10, view.position.y + 10
+      view:on_mouse_pressed("left", x, y, 1)
+      test.ok(#sent(view) > 0)
+      keymap.modkeys.shift = true
+      view:on_mouse_pressed("left", x, y, 2)
+      test.ok(view.selection.active)
+      keymap.modkeys.shift = nil
+      view.pressed.a = { key = "a", text = "a" }
+      view.pending_key = view.pressed.a
+      test.ok(command.perform("ghostty:reset"))
+      test.ok(not view.terminal:mouse_tracking())
+      test.ok(not view.selection.active)
+      test.ok(not view.selection.anchor)
+      test.ok(not view.mouse_button)
+      test.ok(not view.pending_key)
+      test.equal(next(view.pressed), nil)
+      test.equal(
+        table.concat(view.snapshot.rows_data[1].cells):gsub(" ", ""),
+        ""
+      )
+      view:on_mouse_released("left", x, y)
+      view:on_mouse_moved(x + 1, y + 1, 1, 1)
+      view:on_mouse_pressed("left", x, y, 1)
+      test.ok(view.selection.active)
+      view:on_mouse_released("left", x, y)
+      test.equal(sent(view), "")
+    end
+  )
+
   test.it("scrolls history by clicking and dragging the scrollbar", function(c)
     local view = c.view
     fill_history(view)

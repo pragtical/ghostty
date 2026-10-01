@@ -381,6 +381,17 @@ function Terminal:feed(data)
   self.dirty = true
 end
 
+---Clear the screen and terminal modes after a program exits without cleanup.
+---Cancel unfinished control strings before RIS; keep the child process alive.
+function Terminal:reset()
+  if self.closed then
+    return
+  end
+  self:feed("\24\27c")
+  C.ghostty_mouse_encoder_reset(self.mouse_encoder)
+  self.snapshot = nil
+end
+
 function Terminal:state_string(key)
   local value = ffi.new("GhosttyString[1]")
   if

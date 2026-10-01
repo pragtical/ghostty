@@ -822,6 +822,16 @@ command.add(TerminalView, {
   end,
 
   ---@param view plugins.ghostty.TerminalView
+  ["ghostty:reset"] = function(view)
+    if view.terminal then
+      view.terminal:reset()
+      view.selection = selection.new()
+      view.pressed, view.pending_key, view.mouse_button = {}, nil, nil
+      view:update()
+    end
+  end,
+
+  ---@param view plugins.ghostty.TerminalView
   ["ghostty:scroll-up"] = function(view)
     if view.terminal then
       view.terminal:scroll(-3)

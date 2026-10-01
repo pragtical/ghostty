@@ -721,6 +721,56 @@ it("reports focus only when requested and encodes SGR mouse input", function()
   end)
 end)
 
+it("resets stale modes without changing Ctrl+\\ input", function()
+  with_terminal(nil, function(t)
+    t:feed("history\r\n\27[?1049h\27[?1003h\27[?1006h")
+    t:feed("\27[?1004h\27[?2004h\27[?25lbroken")
+    t:update_render()
+    assert(t:mouse_tracking())
+    t:send_key { key = "\\", text = "\\", mods = { ctrl = true } }
+    equal(sent(t), "\28")
+    assert(t:mouse_tracking())
+    t:feed("\27[>31u")
+    t:send_mouse { action = "motion", x = 16, y = 16 }
+    equal(sent(t), "\27[<35;3;2M")
+    t:reset()
+    assert(t:is_dirty())
+    assert(not t:mouse_tracking())
+    assert(not t:mode(1049))
+    assert(not t:bracketed_paste())
+    local output, snapshot = screen(t)
+    equal(output:gsub("%s", ""), "")
+    equal(snapshot.scrollbar.total, snapshot.scrollbar.len)
+    assert(snapshot.cursor.visible)
+    t:send_mouse { action = "press", button = "left", x = 16, y = 16 }
+    t:focus(true)
+    equal(sent(t), "")
+    t:send_key { key = "a", text = "a" }
+    equal(sent(t), "a")
+    t:feed("\27[?1003h\27[?1006h")
+    t:send_mouse { action = "motion", x = 16, y = 16 }
+    equal(sent(t), "\27[<35;3;2M")
+    t:close()
+    t:reset()
+  end)
+end)
+
+it("cancels incomplete control strings when resetting", function()
+  with_terminal(nil, function(t)
+    for _, prefix in ipairs { "\27[?", "\27]52;c;", "\27P", "\27_" } do
+      t:feed("\27[?1003h" .. prefix)
+      t:reset()
+      t:feed("ready\27]52;c;b2s=\7")
+      assert(screen(t):find("ready", 1, true))
+      assert(not t:mouse_tracking())
+      local events = t:poll_events()
+      equal(#events, 1)
+      equal(events[1].kind, "clipboard-write-request")
+      equal(events[1].text, "ok")
+    end
+  end)
+end)
+
 it(
   "extracts links and emits title, cwd and clipboard events across chunks",
   function()
@@ -920,6 +970,12 @@ it(
       end
 
       wait_for("PGT_PROMPT>")
+      -- Recovery clears emulation state while retaining the live shell.
+      local pid = pty.C.pgt_pty_pid(t.pty)
+      t:feed("\27[?1049h\27[?1003h")
+      t:reset()
+      equal(pty.C.pgt_pty_pid(t.pty), pid)
+      assert(not t:mouse_tracking())
       t:resize(93, 12, 8, 16)
       t:input_text(
         windows and "echo INTERACTIVE_%PGT_TEST%"
