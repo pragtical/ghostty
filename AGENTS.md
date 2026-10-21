@@ -189,6 +189,11 @@ Plugin-manager `latest` URLs require a successful versioned release.
   held input state; keep the PTY alive. Reset clears the screen and scrollback.
   Do not reset automatically on Ctrl+\\: programs may handle or ignore SIGQUIT,
   and the shell's lifetime does not tell us when a foreground job has exited.
+- Handle wheel events only when `core.root_view.mouse` is inside the terminal's
+  bounds. Cached view coordinates can be stale after the pointer leaves or the
+  layout changes. Reject outside events before changing selection or scrollback,
+  and let wheel key names reach Pragtical's fallback bindings even while a
+  terminal has keyboard focus.
 - Set the mouse encoder's `ANY_BUTTON_PRESSED` option for held physical buttons.
   Ghostty otherwise drops drags beyond the cell grid, including the partial-cell
   margin beside the scrollbar at some font sizes. Clear it for releases, passive
@@ -276,7 +281,7 @@ arrangement; upstream source does not belong in a vendor directory.
   `4a5d516c161b5543204dd9ce923b841b049ad9d46614b6bd28ee714148d085ac`.
 - The overlay identifies the VT library as `0.1.0-dev`. Upstream's application
   version remains `1.3.2-dev`; the library has its own version. This plugin's
-  version is `0.2.0` in both `meson.build` and `manifest.json`.
+  version is `0.2.1` in both `meson.build` and `manifest.json`.
 - `subprojects/packagefiles/ghostty/build-vt.py` checks the Zig version and runs
   `zig build` with `-Demit-lib-vt=true`, `-Demit-xcframework=false`,
   `-Doptimize=ReleaseFast`, `-Dtarget=...`, and `-Dcpu=baseline`.

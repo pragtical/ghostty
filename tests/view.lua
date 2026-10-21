@@ -37,6 +37,8 @@ test.describe("Ghostty Pragtical integration", function()
   test.before_each(function(context)
     context.active = core.active_view
     context.modkeys = keymap.modkeys
+    context.mouse_x, context.mouse_y =
+      core.root_view.mouse.x, core.root_view.mouse.y
     keymap.modkeys = {}
     context.view = ghostty.open_tab { command = false, close_on_exit = "never" }
     context.view.size.x, context.view.size.y = 640, 240
@@ -60,6 +62,11 @@ test.describe("Ghostty Pragtical integration", function()
       core.set_active_view(context.active)
     end
     keymap.modkeys = context.modkeys
+    core.root_view.mouse.x, core.root_view.mouse.y =
+      context.mouse_x, context.mouse_y
+    if context.wheel_keymap then
+      keymap.map = context.wheel_keymap
+    end
   end)
 
   test.it(
@@ -277,6 +284,7 @@ test.describe("Ghostty Pragtical integration", function()
     test.equal(sent(view), "")
     test.ok(not selection.has_selection(view.selection))
     local offset = view.snapshot.scrollbar.offset
+    core.root_view.mouse.x, core.root_view.mouse.y = x, y + h / 2
     view:on_mouse_wheel(1)
     view:update()
     test.equal(view.snapshot.scrollbar.offset, offset - 3)
@@ -294,6 +302,87 @@ test.describe("Ghostty Pragtical integration", function()
     test.ok(selection.has_selection(view.selection))
     test.equal(sent(view), "")
   end)
+
+  test.it("ignores wheel events outside the terminal bounds", function(c)
+    local view = c.view
+    view.position.x, view.position.y = 100, 100
+    fill_history(view)
+    local x, y, w, h =
+      view.position.x, view.position.y, view.size.x, view.size.y
+    -- The view's last mouse position can remain inside after the mouse leaves.
+    view.mouse_x, view.mouse_y = x + 10, y + 10
+    selection.start(view.selection, 1, 1, 4, 1)
+    local selected, offset = view.selection, view.snapshot.scrollbar.offset
+    for _, mode in ipairs { "l", "h" } do
+      view.terminal:feed("\27[?1000" .. mode .. "\27[?1006h")
+      for _, point in ipairs {
+        { x - 1, y + 10 }, { x + w, y + 10 },
+        { x + 10, y - 1 }, { x + 10, y + h },
+      } do
+        core.root_view.mouse.x, core.root_view.mouse.y = point[1], point[2]
+        test.equal(view:on_mouse_wheel(1), false)
+        test.equal(view:on_mouse_wheel(-1), false)
+        test.equal(view.selection, selected)
+        test.equal(view.terminal:update_render().scrollbar.offset, offset)
+        test.equal(sent(view), "")
+      end
+    end
+    core.root_view.mouse.x, core.root_view.mouse.y = x, y
+    view.size.x = 0
+    test.equal(view:on_mouse_wheel(1), false)
+    view.size.x, view.size.y = w, 0
+    test.equal(view:on_mouse_wheel(1), false)
+  end)
+
+  test.it("uses the current pointer for terminal wheel input", function(c)
+    local view = c.view
+    fill_history(view)
+    local x, y = view.position.x, view.position.y
+    -- A newly exposed view need not have received a mouse movement yet.
+    view.mouse_x, view.mouse_y = x - 10, y - 10
+    core.root_view.mouse.x, core.root_view.mouse.y = x, y
+    local offset = view.snapshot.scrollbar.offset
+    test.ok(view:on_mouse_wheel(1))
+    test.equal(view.terminal:update_render().scrollbar.offset, offset - 3)
+    view.terminal:feed("\27[?1000h\27[?1006h")
+    core.root_view.mouse.x = x + 2 * view.cell_width + 1
+    core.root_view.mouse.y = y + view.cell_height + 1
+    test.ok(view:on_mouse_wheel(-1))
+    test.equal(sent(view), "\27[<65;3;2M")
+    keymap.modkeys.shift = true
+    test.ok(view:on_mouse_wheel(1))
+    test.equal(sent(view), "")
+    test.equal(view.terminal:update_render().scrollbar.offset, offset - 6)
+  end)
+
+  test.it(
+    "passes wheel bindings to the editor while a terminal has focus",
+    function(c)
+      local view = c.view
+      local node = core.root_view.root_node:get_node_for_view(view)
+      view.position.x, view.position.y =
+        node.position.x, node.position.y + 100
+      core.root_view.mouse.x = view.position.x + 10
+      core.root_view.mouse.y = view.position.y - 1
+      c.wheel_keymap = keymap.map
+      keymap.map = setmetatable({}, { __index = keymap.map })
+      for _, stroke in ipairs { "wheelup", "wheeldown", "wheelright" } do
+        local received
+
+        ---@param delta number
+        keymap.map[stroke] = { function(delta)
+          received = delta
+        end }
+
+        local vertical = stroke == "wheelright" and 0
+          or (stroke == "wheelup" and 1 or -1)
+        local horizontal = stroke == "wheelright" and -1 or 0
+        core.on_event("mousewheel", vertical, horizontal)
+        test.equal(received, vertical ~= 0 and vertical or horizontal)
+        test.equal(sent(view), "")
+      end
+    end
+  )
 
   test.it(
     "updates the scrollbar for output, resize and screen changes",

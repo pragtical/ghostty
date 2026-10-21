@@ -704,15 +704,23 @@ function TerminalView:on_mouse_left()
   self.v_scrollbar:on_mouse_left()
 end
 
+---Scroll history or report wheel input only within the visible terminal.
+---@param delta number Vertical wheel delta; positive scrolls up.
+---@return boolean consumed
 function TerminalView:on_mouse_wheel(delta)
-  if not self.terminal or delta == 0 then
+  local x, y = core.root_view.mouse.x, core.root_view.mouse.y
+  if
+    not self.terminal
+    or delta == 0
+    or x < self.position.x
+    or y < self.position.y
+    or x >= self.position.x + self.size.x
+    or y >= self.position.y + self.size.y
+  then
     return false
   end
   self.selection = selection.new()
-  local over_scrollbar = self:scrollbar_overlaps_point(
-    self.mouse_x or self.position.x,
-    self.mouse_y or self.position.y
-  )
+  local over_scrollbar = self:scrollbar_overlaps_point(x, y)
   if
     self.terminal:mouse_tracking()
     and not keymap.modkeys.shift
@@ -722,8 +730,8 @@ function TerminalView:on_mouse_wheel(delta)
       self:send_mouse(
         "press",
         delta > 0 and "wheel_up" or "wheel_down",
-        self.mouse_x or self.position.x,
-        self.mouse_y or self.position.y
+        x,
+        y
       )
     end
   else
@@ -895,6 +903,7 @@ function keymap.on_key_pressed(key, ...)
     not views[view]
     or not view.terminal
     or modifier_map[key]
+    or key:find("wheel", 1, true)
     or editor_binding(key)
   then
     return old_pressed(key, ...)
