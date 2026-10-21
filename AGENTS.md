@@ -281,7 +281,7 @@ arrangement; upstream source does not belong in a vendor directory.
   `4a5d516c161b5543204dd9ce923b841b049ad9d46614b6bd28ee714148d085ac`.
 - The overlay identifies the VT library as `0.1.0-dev`. Upstream's application
   version remains `1.3.2-dev`; the library has its own version. This plugin's
-  version is `0.2.1` in both `meson.build` and `manifest.json`.
+  version is `0.2.2` in both `meson.build` and `manifest.json`.
 - `subprojects/packagefiles/ghostty/build-vt.py` checks the Zig version and runs
   `zig build` with `-Demit-lib-vt=true`, `-Demit-xcframework=false`,
   `-Doptimize=ReleaseFast`, `-Dtarget=...`, and `-Dcpu=baseline`.
@@ -779,7 +779,12 @@ contains exactly the two stripped runtime libraries from that directory.
 Publishing waits for all builds and validates all ten files. Every release
 also receives `SHA256SUMS`.
 
-- Pushes to `master`/`main` publish the `continuous` prerelease.
+- Pushes to `master`/`main` publish the `continuous` prerelease. If the matching
+  `v<manifest version>` tag already points to that commit, the branch run skips
+  its build and release jobs; the tag run publishes all releases. This avoids
+  duplicate builds when pushing the branch and tag together. GitHub still lists
+  both runs, but only the tag run starts the build matrix. Pull requests and
+  manual runs always build, even for a tagged commit.
 - Version tags matching `v<manifest version>` publish a versioned release and
   `latest`, update the `latest` branch/tag used by the plugin manager, and also
   update `continuous`.
@@ -793,8 +798,12 @@ also receives `SHA256SUMS`.
 
 The GitHub repository is `pragtical/ghostty`. Push a `v<manifest version>` tag
 or dispatch the workflow with that tag to publish a release. Keep `meson.build`
-and manifest versions aligned. Routine local validation does not require
-publishing anything.
+and manifest versions aligned. Push the branch and version tag together with
+`git push --atomic origin master refs/tags/v<manifest version>` so the branch
+run sees the tag before deciding whether to build. Pushing a tag after the
+branch build has started does not cancel that build. If a tagged build fails,
+rerun the tag workflow. Routine local validation does not require publishing
+anything.
 
 Useful checks:
 
