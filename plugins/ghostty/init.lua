@@ -28,6 +28,7 @@ local function get_backend()
 end
 
 local views = setmetatable({}, { __mode = "k" })
+local start_polling
 local drawer, drawer_node, drawer_hidden, previous_view
 ---Editor view for a terminal tab or the shared bottom drawer.
 ---@class plugins.ghostty.TerminalView : core.view
@@ -78,6 +79,7 @@ function TerminalView:new(options)
   end
   self.terminal = get_backend().new(spawn)
   views[self] = true
+  start_polling()
   events.emit("terminal-created", { view = self, terminal = self.terminal })
 end
 
@@ -220,25 +222,35 @@ function TerminalView:poll()
   end
 end
 
--- Poll every session, including hidden tabs, without requiring keyboard events.
-core.add_thread(function()
-  while true do
-    if backend then
-      backend.reap()
-    end
-    for view in pairs(views) do
-      local ok = core.try(view.poll, view)
-      if not ok then
-        view:close()
-      end
-    end
-    -- config.fps includes Auto FPS and changes made in Settings at runtime.
-    -- Headless displays can report zero; keep process polling alive there.
-    local fps = config.fps > 0 and config.fps or 60
-    local interval = config.plugins.ghostty.poll_interval or 1 / fps
-    coroutine.yield(math.max(0.001, interval))
+---Start polling on the first session and wake promptly for newly opened ones.
+start_polling = function()
+  local worker = core.threads[views]
+  if worker then
+    worker.wake = 0
+    if core.request_update then core.request_update() end
+    return
   end
-end)
+
+  core.add_thread(function()
+    while true do
+      if backend then
+        backend.reap()
+      end
+      for view in pairs(views) do
+        local ok = core.try(view.poll, view)
+        if not ok then
+          view:close()
+        end
+      end
+      -- Keep live sessions at the configured FPS, including hidden sessions.
+      local fps = config.fps > 0 and config.fps or 60
+      local interval = config.plugins.ghostty.poll_interval or 1 / fps
+      -- Closed POSIX children still need reaping after the last view closes.
+      if not next(views) then interval = math.max(.1, interval) end
+      coroutine.yield(math.max(0.001, interval))
+    end
+  end, views)
+end
 
 local old_exit = core.exit
 function core.exit(quit, force)

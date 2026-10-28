@@ -156,8 +156,11 @@ Plugin-manager `latest` URLs require a successful versioned release.
 
 - Partial writes stay queued. Preserve the per-poll byte budget and total queued
   input limit so a busy terminal does not monopolize an editor frame.
-- Hidden terminals keep polling. Continue POSIX reaping after the last view is
-  closed, and drain final output before notifying the user of process exit.
+- Start the polling worker when the first terminal opens and reuse it for all
+  sessions, including hidden terminals. After the last view closes, poll at
+  intervals of at least 100 ms to continue POSIX reaping. Opening a new terminal
+  wakes the worker immediately. Drain final output before notifying the user
+  of process exit.
 - With `poll_interval = nil`, calculate `1 / config.fps` on each polling pass.
   Core and Settings keep this value in sync with Auto FPS and display changes.
   An explicit numeric interval overrides FPS. Clamp the delay to at least
@@ -281,7 +284,7 @@ arrangement; upstream source does not belong in a vendor directory.
   `4a5d516c161b5543204dd9ce923b841b049ad9d46614b6bd28ee714148d085ac`.
 - The overlay identifies the VT library as `0.1.0-dev`. Upstream's application
   version remains `1.3.2-dev`; the library has its own version. This plugin's
-  version is `0.2.2` in both `meson.build` and `manifest.json`.
+  version is `0.2.3` in both `meson.build` and `manifest.json`.
 - `subprojects/packagefiles/ghostty/build-vt.py` checks the Zig version and runs
   `zig build` with `-Demit-lib-vt=true`, `-Demit-xcframework=false`,
   `-Doptimize=ReleaseFast`, `-Dtarget=...`, and `-Dcpu=baseline`.
