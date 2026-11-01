@@ -168,8 +168,12 @@ Plugin-manager `latest` URLs require a successful versioned release.
   target rather than `core.fps`, which can drop when rendering is overloaded.
   Fall back to 60 FPS when the target is zero or negative: SDL's dummy display
   can report zero, which otherwise leaves the polling coroutine asleep forever.
-- Closing a terminal must remove its actual view/tab node. With `clean_exit`,
-  only exit code zero with no signal closes automatically; failures stay visible.
+- Closing a terminal must remove its actual view/tab node. Ordinary terminals
+  default to `close_on_exit = "always"`, including after a nonzero shell exit.
+  Spawn Agent defaults to `agent_close_on_exit = "never"`. An explicit per-view
+  `close_on_exit` overrides both. With `clean_exit`, only exit code zero with no
+  signal closes automatically; failures stay visible. Close from process-exit
+  events after draining output, without interpreting typed shell commands.
 - Let SDL text input supply printable repeats. Synthesizing another printable
   key repeat duplicates input.
 - Create terminals with `ghostty_terminal_new(allocator, out, cols, rows)` and
@@ -649,7 +653,7 @@ and defaults, then merge defaults with the user's configuration. Pragtical's
 `plugins/settings.lua` accepts type names case-insensitively; write them in
 lowercase (`string`, `number`, `toggle`, `selection`). Other supported types are
 listed in `settings.type`; `text` is unsupported and silently omits the control.
-Use a `selection` with label/value pairs for the OSC 52 policy. Shell
+Use a `selection` with label/value pairs for the exit and OSC 52 policies. Shell
 and library overrides use `string` so executable/library names and empty optional
 overrides remain valid. When changing the spec, check the generated settings UI
 as well as the config values.
@@ -664,12 +668,18 @@ Configuration lives in `config.plugins.ghostty`. Important defaults:
 | `env` | Additional overrides taking precedence over `environment` |
 | `term` | `xterm-256color`; `COLORTERM=truecolor` is also supplied |
 | `drawer_height`, `max_scrollback` | 300 pixels, 10000 lines |
-| `close_on_exit`, `agent_close_on_exit` | `clean_exit`, `never` |
+| `close_on_exit`, `agent_close_on_exit` | `always`, `never` |
 | `click_modifier` | Cmd on macOS, Ctrl elsewhere |
 | `osc52`, `osc_max_bytes` | `ask`, 1 MiB |
 | `paste_warning` | `true` |
 | `poll_interval` | `nil`: follow current `config.fps`; numeric seconds override, minimum 1 ms |
 | `read_budget`, `write_limit` | 256 KiB each for reads/writes per session per poll, 4 MiB queued input |
+
+Settings exposes both exit policies with `always`, `clean_exit`, and `never`
+choices. Changes apply only to newly created views; explicit user configuration
+continues to override the defaults. Only `kind = "agent"` uses the agent policy.
+Other Lua callers inherit `close_on_exit`, including when passing a command,
+and can supply a per-view override to keep their output visible.
 
 Optional `font` overrides the terminal's renderer font or font group.
 `foreground`, `background`, and `cursor` override theme colors with RGB(A) tables;
@@ -703,6 +713,14 @@ Shell classification uses the executable basename, ignoring case and `.exe`:
 | powershell / pwsh | `-NoLogo` | `-Command` |
 | Other shells | `-l` | `-c` |
 
+For `kind = "agent"`, POSIX shells also receive `-i` by default. This loads
+interactive startup files (such as `.zshrc`) before executing the command, so
+Spawn Agent can find tools added to PATH there. The shell still exits after
+the command finishes; this does not start a persistent shell prompt. Keep
+ordinary shells and Windows shell flags unchanged. Explicit `arguments` also
+override this agent default. The view regression uses an isolated Zsh startup
+directory and an executable available only through the PATH set by `.zshrc`.
+
 `arguments = {}` suppresses startup flags. Explicit argument tables override
 defaults. Command strings require `shell = true`; a command array bypasses shell
 interpretation. `command = false` creates an emulation-only terminal for tests.
@@ -718,6 +736,18 @@ actions. Shift overrides terminal mouse tracking for selection/scrolling.
 Ctrl-click (Cmd-click on macOS) opens links and `path:line:column` references.
 The `click_modifier` selection appears as **Open Links Modifier** in Settings.
 Its platform-specific choices apply to new terminals.
+
+`ghostty:run-command-in-tab` and `ghostty:run-command-in-drawer` accept an
+optional command string through `command.perform`. Without one, they prompt in
+CommandView; cancellation and blank text leave terminal sessions untouched.
+The tab command always creates a new ordinary shell. The drawer command reuses
+and reveals a live drawer, preserving its shell state, or recreates it if its
+process has exited. Queue the text unchanged with `Terminal:input_text`, then
+send Enter through Ghostty's key encoder only if the text was accepted. Report
+input failures. Do not use command-string shell flags or Spawn Agent policies.
+These commands act like typing into the session: callers must use a reused
+drawer at a shell prompt, and no foreground-process interruption or prompt
+detection is attempted. Ordinary applications return to the existing shell.
 
 The public API is exposed by `require "plugins.ghostty"`:
 

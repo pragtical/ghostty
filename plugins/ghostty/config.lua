@@ -14,6 +14,7 @@ local macos = PLATFORM == "Mac OS X"
 ---@field env? table<string, string> Overrides applied after environment.
 ---@field title? string Initial tab title, replaced by terminal title events.
 ---@field close_on_exit? "never"|"clean_exit"|"always"
+---@field agent_close_on_exit? "never"|"clean_exit"|"always"
 ---@field click_modifier? string Modifier held while left-clicking a link.
 ---@field cols? integer Initial grid width in cells.
 ---@field rows? integer Initial grid height in cells.
@@ -29,7 +30,7 @@ local defaults = {
   term = "xterm-256color",
   drawer_height = 300,
   max_scrollback = 10000,
-  close_on_exit = "clean_exit",
+  close_on_exit = "always",
   agent_close_on_exit = "never",
   click_modifier = macos and "cmd" or "ctrl",
   osc52 = "ask",
@@ -51,6 +52,33 @@ defaults.config_spec = {
     path = "shell",
     type = "string",
     default = defaults.shell,
+  },
+  {
+    label = "Close on Exit",
+    description = "When new terminal tabs and drawers close after their "
+      .. "process exits. Only on Successful Exit keeps failures visible. "
+      .. "Spawn Agent has its own policy.",
+    path = "close_on_exit",
+    type = "selection",
+    default = defaults.close_on_exit,
+    values = {
+      { "Always", "always" },
+      { "Only on Successful Exit", "clean_exit" },
+      { "Never", "never" },
+    },
+  },
+  {
+    label = "Agent Close on Exit",
+    description = "When new Spawn Agent views close after their command "
+      .. "exits. Only on Successful Exit keeps failures visible.",
+    path = "agent_close_on_exit",
+    type = "selection",
+    default = defaults.agent_close_on_exit,
+    values = {
+      { "Always", "always" },
+      { "Only on Successful Exit", "clean_exit" },
+      { "Never", "never" },
+    },
   },
   {
     label = "Terminal Type",

@@ -32,6 +32,10 @@ function M.argv(options)
     args = kind == "posix" and { "-l" }
       or kind == "cmd" and { "/d" }
       or { "-NoLogo" }
+    if kind == "posix" and options.kind == "agent" then
+      -- Command mode otherwise skips interactive PATH setup such as .zshrc.
+      args[#args + 1] = "-i"
+    end
   end
   for _, arg in ipairs(args) do
     argv[#argv + 1] = arg

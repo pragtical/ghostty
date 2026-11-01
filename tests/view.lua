@@ -1,6 +1,8 @@
 local test = require "core.test"
 local core = require "core"
 local command = require "core.command"
+local common = require "core.common"
+local config = require "core.config"
 local keymap = require "core.keymap"
 local style = require "core.style"
 local renderer = require "renderer"
@@ -33,9 +35,72 @@ local function fill_history(view)
   view:update()
 end
 
+---Let the polling worker drain output and apply the view's exit policy.
+---@param view plugins.ghostty.TerminalView
+local function wait_for_exit(view)
+  local deadline = system.get_time() + 5
+  while not view.exited and system.get_time() < deadline do
+    coroutine.yield(0.01)
+  end
+  test.ok(view.exited, "Terminal did not exit before timeout")
+end
+
+---Wait for shell output while the editor continues polling the PTY.
+---@param view plugins.ghostty.TerminalView
+---@param text string Output that does not appear literally in the input echo.
+local function wait_for_output(view, text)
+  local deadline = system.get_time() + 5
+  repeat
+    if not view.terminal then break end
+    local lines = {}
+    for _, row in ipairs(view.terminal:update_render().rows_data) do
+      lines[#lines + 1] = table.concat(row.cells)
+    end
+    if table.concat(lines, "\n"):find(text, 1, true) then return end
+    coroutine.yield(0.01)
+  until system.get_time() >= deadline
+  test.ok(false, "Missing terminal output: " .. text)
+end
+
+---Use a predictable interactive shell without user startup scripts.
+---@param context table Test context retaining the original configuration.
+local function configure_test_shell(context)
+  local windows = PLATFORM == "Windows"
+  config.plugins.ghostty = common.merge(context.ghostty_config, {
+    shell = windows and "cmd.exe" or "/bin/sh",
+    arguments = windows and { "/d", "/q" } or { "-i" },
+    env = { ENV = "", PGT_RUN_TEST = "OK" },
+  })
+end
+
+---Build a command whose output differs from the terminal's input echo.
+---@param prefix string Marker prefix.
+---@return string command
+local function print_marker(prefix)
+  return PLATFORM == "Windows" and ("echo " .. prefix .. "%PGT_RUN_TEST%")
+    or ("printf '" .. prefix .. "%s\\n' \"$PGT_RUN_TEST\"")
+end
+
+---Invoke a terminal command and retain its view for cleanup on test failure.
+---@param context table Test context retaining additional views.
+---@param action string Registered command name.
+---@param text string Command to execute inside the shell.
+---@return plugins.ghostty.TerminalView
+local function run_in_terminal(context, action, text)
+  test.ok(command.perform(action, text))
+  local view = core.active_view
+  test.ok(view.ghostty_terminal_view)
+  table.insert(context.extra_views, view)
+  view.size.x, view.size.y = 640, 240
+  view:update()
+  return view
+end
+
 test.describe("Ghostty Pragtical integration", function()
   test.before_each(function(context)
     context.active = core.active_view
+    context.ghostty_config = config.plugins.ghostty
+    context.extra_views = {}
     context.modkeys = keymap.modkeys
     context.mouse_x, context.mouse_y =
       core.root_view.mouse.x, core.root_view.mouse.y
@@ -46,18 +111,33 @@ test.describe("Ghostty Pragtical integration", function()
   end)
 
   test.after_each(function(context)
+    if
+      context.prompt_state
+      and core.command_view.state ~= context.prompt_state
+    then
+      core.command_view:exit(false)
+    end
+    if context.unsubscribe_created then context.unsubscribe_created() end
+    if context.saved_error then core.error = context.saved_error end
+    if context.saved_shell then
+      require("plugins.ghostty.config").shell = context.saved_shell
+    end
+    config.plugins.ghostty = context.ghostty_config
     if context.saved_style then
       for key, value in pairs(context.saved_style) do
         style[key] = value
       end
     end
-    local view = context.view
-    local node = core.root_view.root_node:get_node_for_view(view)
-    if node then
-      node:close_view(core.root_view.root_node, view)
-    else
-      view:close()
+    table.insert(context.extra_views, context.view)
+    for _, view in ipairs(context.extra_views) do
+      local node = core.root_view.root_node:get_node_for_view(view)
+      if node then
+        node:close_view(core.root_view.root_node, view)
+      else
+        view:close()
+      end
     end
+    if context.startup_dir then common.rm(context.startup_dir, true) end
     if context.active then
       core.set_active_view(context.active)
     end
@@ -704,10 +784,245 @@ test.describe("Ghostty Pragtical integration", function()
   )
 
   test.it(
+    "runs each tab command in a new shell that accepts further input",
+    function(context)
+      configure_test_shell(context)
+      local previous
+      for _, marker in ipairs { "FIRST_", "SECOND_" } do
+        local view = run_in_terminal(context, "ghostty:run-command-in-tab",
+          print_marker(marker))
+        test.ok(view ~= previous)
+        wait_for_output(view, marker .. "OK")
+        local terminal = view.terminal
+        view:on_text_input(print_marker("FOLLOWUP_"))
+        terminal:send_key { key = "return" }
+        wait_for_output(view, "FOLLOWUP_OK")
+        test.equal(view.terminal, terminal)
+        test.ok(not terminal:exited())
+        previous = view
+      end
+    end
+  )
+
+  test.it("reuses and reveals the drawer with its shell state", function(c)
+    configure_test_shell(c)
+    local action = "ghostty:run-command-in-drawer"
+    local view = run_in_terminal(c, action, print_marker("DRAWER_"))
+    wait_for_output(view, "DRAWER_OK")
+    local terminal = view.terminal
+    view:on_text_input(PLATFORM == "Windows" and 'set "PGT_RUN_TEST=KEPT"'
+      or "PGT_RUN_TEST=KEPT")
+    terminal:send_key { key = "return" }
+    test.ok(command.perform("ghostty:toggle-drawer"))
+    test.ok(core.active_view ~= view)
+    local reopened = run_in_terminal(c, action, print_marker("REUSED_"))
+    test.equal(reopened, view)
+    test.equal(view.terminal, terminal)
+    test.ok(view.size.y > 0)
+    wait_for_output(view, "REUSED_KEPT")
+    test.ok(not terminal:exited())
+  end)
+
+  test.it("recreates an exited drawer before running a command", function(c)
+    configure_test_shell(c)
+    config.plugins.ghostty.close_on_exit = "never"
+    local action = "ghostty:run-command-in-drawer"
+    local old = run_in_terminal(c, action, "exit 7")
+    wait_for_exit(old)
+    test.not_nil(old.terminal)
+    local view = run_in_terminal(c, action, print_marker("RECREATED_"))
+    test.ok(view ~= old)
+    test.is_nil(old.terminal)
+    test.is_nil(core.root_view.root_node:get_node_for_view(old))
+    wait_for_output(view, "RECREATED_OK")
+    test.ok(not view.terminal:exited())
+  end)
+
+  test.it("prompts for commands and ignores blank input", function(c)
+    configure_test_shell(c)
+    c.prompt_state = core.command_view.state
+    c.unsubscribe_created = ghostty.on("terminal-created", function(event)
+      table.insert(c.extra_views, event.view)
+    end)
+    for _, target in ipairs { "tab", "drawer" } do
+      local action = "ghostty:run-command-in-" .. target
+      local count = #c.extra_views
+      test.ok(command.perform(action))
+      test.equal(#c.extra_views, count)
+      core.command_view:exit(false)
+      test.equal(#c.extra_views, count)
+      for _, blank in ipairs { "", "  \t" } do
+        test.ok(command.perform(action, blank))
+        test.equal(#c.extra_views, count)
+      end
+      test.ok(command.perform(action))
+      core.command_view:set_text("   ")
+      core.command_view:submit()
+      test.equal(#c.extra_views, count)
+      test.ok(command.perform(action))
+      core.command_view:set_text(print_marker("PROMPT_"))
+      core.command_view:submit()
+      test.equal(#c.extra_views, count + 1)
+      local view = c.extra_views[#c.extra_views]
+      test.equal(core.active_view, view)
+      view.size.x, view.size.y = 640, 240
+      view:update()
+      wait_for_output(view, "PROMPT_OK")
+    end
+  end)
+
+  test.it("reports rejected command input without sending Enter", function(c)
+    local view = ghostty.open_drawer {
+      command = false, write_limit = 4, close_on_exit = "never",
+    }
+    table.insert(c.extra_views, view)
+    local errors = {}
+    c.saved_error = core.error
+
+    core.error = function(format, ...)
+      errors[#errors + 1] = string.format(format, ...)
+    end
+
+    test.ok(command.perform("ghostty:run-command-in-drawer", "too long"))
+    test.equal(sent(view), "")
+    test.match(errors[#errors], "queue is full")
+    test.ok(command.perform("ghostty:run-command-in-drawer", "1234"))
+    test.equal(sent(view), "1234")
+    test.match(errors[#errors], "Cannot send Enter")
+  end)
+
+  test.it(
+    "closes manual tabs and drawers after successful and failed shell exits",
+    function(context)
+      local windows = PLATFORM == "Windows"
+      for _, action in ipairs { "ghostty:open-tab", "ghostty:open-drawer" } do
+        for _, code in ipairs { 0, 1 } do
+          test.ok(command.perform(action, {
+            shell = windows and "cmd.exe" or "/bin/sh",
+            arguments = windows and { "/d", "/q" } or { "-i" },
+            env = { ENV = "" },
+          }))
+          local view = core.active_view
+          test.ok(view ~= context.view and view.ghostty_terminal_view)
+          table.insert(context.extra_views, view)
+          -- Plain exit inherits the previous command's status.
+          view:on_text_input(windows and ("cmd /d /c exit " .. code)
+            or (code == 0 and "true" or "false"))
+          view.terminal:send_key { key = "return" }
+          view:on_text_input("exit")
+          view.terminal:send_key { key = "return" }
+          wait_for_exit(view)
+          test.equal(view.exit_code, code)
+          test.equal(view.exit_signal, 0)
+          test.is_nil(view.terminal)
+          test.is_nil(core.root_view.root_node:get_node_for_view(view))
+        end
+      end
+    end
+  )
+
+  test.it(
+    "finds Spawn Agent commands added to PATH by interactive shell startup",
+    function(context)
+      test.skip_if(PLATFORM == "Windows", "Requires a POSIX shell")
+      local probe = assert(io.popen("command -v zsh"))
+      local executable = probe:read("*l")
+      probe:close()
+      test.skip_if(not executable, "Zsh is not installed")
+
+      local dir = core.temp_filename("-agent-startup")
+      test.ok(system.mkdir(dir))
+      context.startup_dir = dir
+      local rc = assert(io.open(dir .. "/.zshrc", "w"))
+      rc:write('export PATH="$ZDOTDIR:$PATH"\n')
+      rc:close()
+      local tool_path = dir .. "/pgt-agent-startup-test"
+      local tool = assert(io.open(tool_path, "w"))
+      tool:write("#!/bin/sh\nprintf 'AGENT_%s\\n' STARTUP_OK\n")
+      tool:close()
+      local shell = require "plugins.ghostty.shell"
+      local ok = os.execute("chmod +x " .. shell.quote_path(tool_path))
+      test.ok(ok == true or ok == 0)
+
+      local shell_config = require "plugins.ghostty.config"
+      context.saved_shell = shell_config.shell
+      shell_config.shell = executable
+      config.plugins.ghostty = common.merge(context.ghostty_config, {
+        env = { ZDOTDIR = dir },
+      })
+      config.plugins.ghostty.arguments = nil
+      local view = run_in_terminal(
+        context, "ghostty:spawn-agent", "pgt-agent-startup-test"
+      )
+      wait_for_exit(view)
+      test.equal(view.exit_code, 0)
+      wait_for_output(view, "AGENT_STARTUP_OK")
+      test.not_nil(core.root_view.root_node:get_node_for_view(view))
+    end
+  )
+
+  test.it(
+    "keeps Spawn Agent views open after successful and failed exits",
+    function(context)
+      config.plugins.ghostty = common.merge(context.ghostty_config, {
+        shell = PLATFORM == "Windows" and "cmd.exe" or "/bin/sh",
+        arguments = {},
+      })
+      for _, code in ipairs { 0, 7 } do
+        test.ok(command.perform("ghostty:spawn-agent", "exit " .. code))
+        local view = core.active_view
+        table.insert(context.extra_views, view)
+        wait_for_exit(view)
+        test.equal(view.exit_code, code)
+        test.not_nil(view.terminal)
+        test.not_nil(core.root_view.root_node:get_node_for_view(view))
+      end
+    end
+  )
+
+  test.it(
+    "applies changed exit policies to new views and honors view overrides",
+    function(context)
+      local cases = {
+        { ghostty.open_tab { command = false }, true },
+        { ghostty.open_tab { command = false, kind = "agent" }, false },
+      }
+      for _, case in ipairs(cases) do
+        table.insert(context.extra_views, case[1])
+      end
+      config.plugins.ghostty = common.merge(context.ghostty_config, {
+        close_on_exit = "never",
+        agent_close_on_exit = "always",
+      })
+      for _, case in ipairs {
+        { {}, false },
+        { { kind = "agent" }, true },
+        { { kind = "agent", close_on_exit = "never" }, false },
+        { { close_on_exit = "always" }, true },
+      } do
+        local view =
+          ghostty.open_tab(common.merge(case[1], { command = false }))
+        table.insert(context.extra_views, view)
+        table.insert(cases, { view, case[2] })
+      end
+      for _, case in ipairs(cases) do
+        local view, should_close = case[1], case[2]
+        view.terminal:emit { kind = "terminal-exited", code = 7, signal = 0 }
+        view:poll()
+        test.equal(view.terminal == nil, should_close)
+        local node = core.root_view.root_node:get_node_for_view(view)
+        test.equal(node == nil, should_close)
+      end
+    end
+  )
+
+  test.it(
     "keeps failed sessions open under clean_exit policy",
     function(context)
-      local view = context.view
-      view.close_on_exit = "clean_exit"
+      local view = ghostty.open_tab {
+        command = false, close_on_exit = "clean_exit",
+      }
+      table.insert(context.extra_views, view)
       view.terminal:emit { kind = "terminal-exited", code = 7, signal = 0 }
       view:poll()
       test.not_nil(view.terminal)

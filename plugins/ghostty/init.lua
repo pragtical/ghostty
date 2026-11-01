@@ -803,10 +803,59 @@ local function toggle_drawer()
   return drawer
 end
 
+---Submit a command to an interactive shell, prompting when omitted.
+---@param text? string Command text interpreted by the terminal's shell.
+---@param in_drawer boolean Reuse the shared drawer instead of opening a tab.
+local function run_command(text, in_drawer)
+
+  ---@param value string Command text supplied directly or through the prompt.
+  local function submit(value)
+    if type(value) ~= "string" then
+      core.error("Terminal command must be a string")
+      return
+    end
+    if not value:find("%S") then
+      return
+    end
+    if in_drawer and drawer then
+      if not drawer.terminal or drawer.exited or drawer.terminal:exited() then
+        close_view(drawer)
+      end
+    end
+    local view = in_drawer and open_drawer() or open_tab()
+    view.selection = selection.new()
+    local ok, err = view.terminal:input_text(value)
+    if not ok then
+      core.error("Cannot run terminal command: %s", err)
+      return
+    end
+    if not view.terminal:send_key { key = "return" } then
+      core.error("Cannot send Enter to the terminal")
+    end
+  end
+
+  if text == nil then
+    local label = in_drawer and "Run Command in Drawer" or "Run Command in Tab"
+    core.command_view:enter(label, { submit = submit })
+  else
+    submit(text)
+  end
+end
+
 command.add(nil, {
   ["ghostty:open-tab"] = open_tab,
   ["ghostty:open-drawer"] = open_drawer,
   ["ghostty:toggle-drawer"] = toggle_drawer,
+
+  ---@param text? string Command to run in the drawer's interactive shell.
+  ["ghostty:run-command-in-drawer"] = function(text)
+    run_command(text, true)
+  end,
+
+  ---@param text? string Command to run in a new tab's interactive shell.
+  ["ghostty:run-command-in-tab"] = function(text)
+    run_command(text, false)
+  end,
 
   ["ghostty:spawn-agent"] = function(text)
 

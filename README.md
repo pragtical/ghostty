@@ -35,8 +35,8 @@ to the terminal program. Editor shortcuts such as `Ctrl+Shift+P` for the command
 palette and `Ctrl+Tab` for switching tabs remain available.
 
 New sessions start in the current project directory. Hiding the drawer keeps
-its process running. Successful shells close automatically; failed sessions
-stay open so you can read their output.
+its process running. Ordinary terminals close when their shell exits by default;
+Spawn Agent views stay open. Both exit policies are configurable in Settings.
 
 - Drag to select text, or double-click to select a word and drag to extend it.
   Hold Shift to select or scroll when a terminal program captures mouse input.
@@ -46,8 +46,24 @@ stay open so you can read their output.
   on macOS. Change this under **Ghostty Terminal → Open Links Modifier**.
 - Drop files into the terminal to insert their quoted paths.
 - Find more actions in the command palette by searching for `ghostty`, including
-  clearing the screen, scrolling, and running a command with
-  `ghostty:spawn-agent`.
+  clearing the screen, scrolling, and running commands.
+
+**Ghostty: Run Command in Tab** opens a new shell tab and asks for a command.
+**Ghostty: Run Command in Drawer** uses the shared drawer, opening it if needed.
+Quitting the application returns you to the shell. Use the drawer command while
+the drawer is at a shell prompt: it sends input to the current session.
+
+You can also supply the command from your Lua configuration or another plugin:
+
+```lua
+local command = require "core.command"
+command.perform("ghostty:run-command-in-drawer", "btop")
+command.perform("ghostty:run-command-in-tab", "git status")
+```
+
+`ghostty:spawn-agent` runs a command as the session's task; it has its own exit
+policy and does not return to an interactive shell afterward. On Unix shells,
+it loads interactive startup files so commands added to your PATH are available.
 
 If a program crashes or is killed with `Ctrl+\`, it can leave mouse reporting
 enabled, making clicks type escape codes at the shell prompt. Open the command
@@ -71,15 +87,21 @@ when you change it. Programs can also use 256 colors and truecolor.
 ## Configuration
 
 Open **Settings → Plugins → Ghostty Terminal** to change the shell, drawer
-height, scrollback, link modifier, and clipboard options. Shell and link
-modifier changes apply to new terminals.
+height, scrollback, exit behavior, link modifier, and clipboard options. Shell,
+exit policy, and link modifier changes apply to new terminals.
+
+**Close on Exit** defaults to **Always**: ordinary tabs and drawers close when
+their shell exits, even after a failed command. **Agent Close on Exit** defaults
+to **Never**, keeping Spawn Agent output available for inspection. Both settings
+also offer **Only on Successful Exit**, which keeps failed sessions visible.
 
 For additional options, edit your Pragtical user configuration:
 
 ```lua
 local config = require "core.config"
 
-config.plugins.ghostty.close_on_exit = "clean_exit" -- "always" or "never"
+config.plugins.ghostty.close_on_exit = "always"
+config.plugins.ghostty.agent_close_on_exit = "never"
 config.plugins.ghostty.environment = { MY_VARIABLE = "value" }
 
 -- Optional: poll every 5 ms instead of following the editor's FPS setting.
