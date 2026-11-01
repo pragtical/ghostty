@@ -440,6 +440,66 @@ it(
 )
 
 it(
+  "keeps reused render buffers independent of snapshots and other terminals",
+  function()
+    with_terminal(nil, function(a)
+      with_terminal(nil, function(b)
+        local cluster = "e" .. string.rep("́", 60)
+        a:feed(cluster .. "\27[38;2;12;34;56mA")
+        local first = a:update_render()
+        local buffer = a.render_scratch.chars
+        b:feed("\27[32mB")
+        b:update_render()
+        collectgarbage("collect")
+        a:feed("\27[H\27[0m" .. cluster .. "Z")
+        local second = a:update_render()
+        equal(a.render_scratch.chars, buffer)
+        equal(second.rows_data[1].cells[1], cluster)
+        equal(second.rows_data[1].cells[2], "Z")
+        equal(first.rows_data[1].cells[2], "A")
+        equal(first.rows_data[1].spans[2].fg[2], 34)
+        equal(b:update_render().rows_data[1].cells[1], "B")
+        a:reset()
+        equal(a:update_render().rows_data[1].cells[1], " ")
+      end)
+    end)
+  end
+)
+
+it("resolves foreground styles and erased backgrounds without stale colors",
+  function()
+    with_terminal(nil, function(t)
+      t:feed("\27[38;2;12;34;56mA\27[0mB\27[38;5;196mC"
+        .. "\27[0mD\27[48;2;70;80;90m\27[K")
+      local first = t:update_render()
+      local spans = first.rows_data[1].spans
+      equal(spans[1].fg[2], 34)
+      equal(spans[2].fg, first.foreground)
+      equal(spans[3].fg[1], 255)
+      equal(spans[3].fg[2], 0)
+      equal(spans[4].fg, first.foreground)
+      equal(spans[5].text, " ")
+      equal(spans[5].bg[2], 80)
+      t:feed("\27]4;196;rgb:01/02/03\7\27[0m")
+      local second = t:update_render()
+      equal(second.rows_data[1].spans[3].fg[2], 2)
+      equal(spans[3].fg[2], 0)
+      t:feed("\27[2;3H") -- Cursor-only update keeps the cell snapshots.
+      local cursor = t:update_render()
+      equal(cursor.cursor.x, 2)
+      equal(cursor.cursor.y, 1)
+      equal(cursor.rows_data[1], second.rows_data[1])
+      t:feed("\27[1;4H界") -- A narrow cell and erased space become wide.
+      local wide = t:update_render().rows_data[1]
+      equal(wide.cells[4], "界")
+      equal(wide.cells[5], "")
+      equal(wide.spans[4].width, 2)
+      equal(spans[4].text, "D")
+    end)
+  end
+)
+
+it(
   "applies truecolor, inverse, hidden text, underline and cursor shape",
   function()
     with_terminal(nil, function(t)
@@ -789,6 +849,31 @@ it(
       equal(found["title-changed"].title, "Title")
       assert(found["cwd-changed"].cwd:find("/tmp", 1, true))
       equal(found["clipboard-write-request"].text, "hello")
+    end)
+  end
+)
+
+it(
+  "refreshes metadata after feed even when rendering clears dirty state",
+  function()
+    with_terminal(nil, function(t)
+      equal(#t:poll_events(), 0)
+      for _, title in ipairs { "First", "Second" } do
+        t:feed("\27]2;" .. title .. "\7\27]7;file://localhost/" .. title)
+        t:update_render()
+        t:clear_dirty()
+        local events = t:poll_events()
+        equal(#events, 1)
+        equal(events[1].title, title)
+        equal(#t:poll_events(), 0)
+        t:feed("\27\\")
+        t:update_render()
+        t:clear_dirty()
+        events = t:poll_events()
+        equal(#events, 1)
+        equal(events[1].cwd, "file://localhost/" .. title)
+        equal(#t:poll_events(), 0)
+      end
     end)
   end
 )

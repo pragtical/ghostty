@@ -108,12 +108,20 @@ Plugin-manager `latest` URLs require a successful versioned release.
   sends part of its gesture to the terminal application.
 - Fetch raw cells once per row with `CELLS_RAW`; the borrowed pointer must not
   survive a render-state update. Batch style/text with `row_cells_get_multi`.
-  Keep optional foreground/background queries separate: an absent color stops
-  a batch with `INVALID_VALUE`. Preserve all owners of its output pointers.
+  Resolve foreground colors from the fetched style and active render palette.
+  Keep the optional background query separate: blank cells can store background
+  colors outside the style, and an absent color stops a batch with
+  `INVALID_VALUE`. Reset its output to the default background for each cell.
+  Preserve all owners of output pointers in each terminal's render scratch
+  storage, including the UTF-8 buffer when it grows.
 - Treat render snapshots as immutable. Reuse unchanged cells even in dirty rows,
-  since TUIs often rewrite identical content. Colors use a weak-value cache so
-  transient application truecolors can be collected. Drawing caches use row
-  identity; changing text, style, colors or dimensions must invalidate reuse.
+  since TUIs often rewrite identical content. Allocate row arrays only after
+  the first changed cell, copying the preceding unchanged cells and spans.
+  Existing snapshots use `row_iterator_next_dirty`; creation, reset and resize
+  extract every row. Call `render_state_clean` only after successful extraction.
+  Colors use a weak-value cache so transient application truecolors can be
+  collected. Drawing caches use row identity; changing text, style, colors or
+  dimensions must invalidate reuse.
 - Combine background rectangles and skip blank glyphs, including redundant
   default-background fills. Keep decorations on spaces and draw selection after
   backgrounds. Position glyphs by terminal cells; concatenating arbitrary text
@@ -161,6 +169,10 @@ Plugin-manager `latest` URLs require a successful versioned release.
   intervals of at least 100 ms to continue POSIX reaping. Opening a new terminal
   wakes the worker immediately. Drain final output before notifying the user
   of process exit.
+- Poll title/cwd metadata initially and after `feed`, independently of the
+  render dirty flag. Rendering may consume that flag before polling runs.
+  Retain reusable status/query buffers, but return independent event batches.
+  Only search the editor view tree when dirty output needs visibility checking.
 - With `poll_interval = nil`, calculate `1 / config.fps` on each polling pass.
   Core and Settings keep this value in sync with Auto FPS and display changes.
   An explicit numeric interval overrides FPS. Clamp the delay to at least
@@ -546,13 +558,17 @@ recordings and screenshots contain the local process list.
 
 | Environment variable | Purpose / default |
 | --- | --- |
-| `GHOSTTY_PROFILE_MODE` | `capture` or `replay`; defaults to `capture` |
+| `GHOSTTY_PROFILE_MODE` | `capture`, `replay`, or `exercise`; defaults to `capture` |
 | `GHOSTTY_PROFILE_OUTPUT` | Output prefix; defaults to `/tmp/ghostty-profile` |
 | `GHOSTTY_PROFILE_INPUT` | Recording path; defaults to `<output prefix>.frames` |
 | `GHOSTTY_PROFILE_SECONDS` | Capture duration; defaults to 8 seconds |
 | `GHOSTTY_PROFILE_REPEATS` | Replay count; defaults to 10 after one warmup pass |
-| `GHOSTTY_PROFILE_FORMAT` | `jit.p` format; defaults to `fl3i1m1` for functions/lines |
+| `GHOSTTY_PROFILE_FORMAT` | `jit.p` format; defaults to `vf3i1m1` for VM states/functions |
 | `GHOSTTY_PROFILE_TRACE` | Optional output path for `jit.v` compilation logs |
+| `GHOSTTY_PROFILE_PLUGIN` | Optional checkout root for before/after comparisons |
+| `GHOSTTY_PROFILE_WORKLOAD` | Exercise: `redraw`, `stream`, `unicode`, `scroll`, `idle`, or `sessions`; defaults to `redraw` |
+| `GHOSTTY_PROFILE_ITERATIONS` | Exercise count; defaults to 1000, or 100000 for idle/session polling |
+| `GHOSTTY_PROFILE_CALLS` | Set to `1` to count VT calls instead of sampling; its instrumented timings are not comparable |
 
 Compare function/line profiles with `GHOSTTY_PROFILE_FORMAT=vf3i1m1`, which
 separates GC, compiled Lua, and native samples. Samples attributed to an FFI call
@@ -561,12 +577,57 @@ confirms whether the hot loop compiles. Keep callback-capable feed/resize
 methods off the JIT even when optimizing the render loop. Use the same recording,
 font, and renderer for both runs.
 
+Use exercise mode to cover repeated identical output, changing build logs,
+Unicode/truecolor cells, scrollback, idle updates, and six live shell sessions.
+The idle workloads measure update/poll cost without drawing every iteration;
+their final frame is still saved for inspection. For example:
+
+```sh
+SDL_VIDEO_DRIVER=dummy PRAGTICAL_USERDIR=/tmp/ghostty-profile-user \
+  GHOSTTY_PROFILE_MODE=exercise GHOSTTY_PROFILE_WORKLOAD=stream \
+  GHOSTTY_PROFILE_OUTPUT=/tmp/ghostty-stream \
+  pragtical run scripts/profile.lua
+```
+
+Point `GHOSTTY_PROFILE_PLUGIN` at a saved baseline checkout containing its two
+runtime libraries to compare it with the working tree through the same harness.
+Run before/after cases serially at least three times, without concurrent tests
+or builds. Compare means and p95 across runs; tiny idle timings need longer
+runs. Memory figures are Lua heap sizes after collection, including retained
+timing arrays and profiler state; they are not native memory or peak RSS.
+Keep call counting in separate runs because its wrappers alter JIT behavior.
+
 Timing reports separate feed, snapshot extraction, draw submission, and native
 frame completion. The dummy SDL driver uses the software surface backend and
 replay bypasses editor pacing, so these are frame costs, not end-to-end input
 latencies. Also check btop interactively for actual responsiveness. Snapshot
 reuse tests, decorated-space/selection/wide-cursor tests, and image comparisons
 cover the rendering optimization; preserve them when changing the cache.
+
+The November 2026 optimization was compared with `36d657c` through three serial
+before/after runs per workload. At 177x47 cells with the dummy/surface renderer,
+the median of each run's mean rendering time was:
+
+| Workload | Before | After |
+| --- | --- | --- |
+| btop replay, snapshot extraction | 1.167 ms | 0.736 ms |
+| btop replay, complete rendering frame | 2.168 ms | 1.700 ms |
+| Repeated identical redraw | 3.735 ms | 2.884 ms |
+| Streaming output | 3.019 ms | 2.716 ms |
+| Unicode/truecolor output | 2.467 ms | 2.147 ms |
+| Scrollback | 1.443 ms | 1.357 ms |
+
+Frame times include extraction, drawing and native completion; feeding VT bytes
+is measured separately. All 15 active-workload before/after final images were
+pixel-identical. Idle updates dropped from about 0.007 to 0.001 ms; a pass over
+six live idle PTYs dropped from about 0.006 to 0.005 ms. These tiny timings are
+rounded and are not whole-editor CPU percentages. VT calls in the btop workload
+fell by about 20%, and GC's share of sampled time fell from 9% to 6-7%.
+The Linux editor and Meson suites passed, as did desktop Vulkan rendering and
+live btop/Neovim/Codex startup/input checks; no model request was submitted.
+Windows and macOS were not executed for this Lua-only optimization.
+Caching extra per-glyph font/geometry records was rejected after it increased
+draw time; retain cell-positioned drawing and the simpler row-cache array.
 
 ### Windows Pragtical and Wine
 
@@ -695,8 +756,9 @@ bright black targets 3:1, while ANSI black remains a background shade. Bright
 variants move toward white on dark backgrounds and black on light backgrounds.
 Neutral colors follow the effective foreground/background, including overrides.
 
-`TerminalView` compares color-value signatures, including syntax colors, so open
-terminals update even when a theme mutates an existing table. Generate only when
+`TerminalView` compares cached numeric channels, including syntax colors and
+alpha, so open terminals update even when a theme mutates an existing table.
+These checks reuse their storage instead of building strings. Generate only when
 these values change. `Terminal:set_palette` reads all 256 default entries, replaces
 0–15, and sends a `GhosttyColorRgb[256]` through FFI. Keep indices 16–255 unchanged
 and let Ghostty preserve application OSC 4 overrides; OSC 104 should restore the

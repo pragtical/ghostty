@@ -163,6 +163,43 @@ function M.signature(theme, foreground, background)
   return table.concat(parts, ";")
 end
 
+---Remember channel values without allocating strings on unchanged updates.
+---@param state table Reusable channel storage.
+---@param offset integer Zero-based offset into the storage.
+---@param color? integer[] RGB(A) color, or an absent theme accent.
+---@return boolean changed
+function M.color_changed(state, offset, color)
+  local changed = false
+  for i = 1, 4 do
+    local value = color and color[i] or false
+    if state[offset + i] ~= value then
+      state[offset + i], changed = value, true
+    end
+  end
+  return changed
+end
+
+---Track palette inputs, including alpha and edits to existing color tables.
+---@param state table Reusable channel storage.
+---@param theme table
+---@param foreground integer[]
+---@param background integer[]
+---@return boolean changed
+function M.changed(state, theme, foreground, background)
+  local changed = M.color_changed(state, 0, foreground)
+  changed = M.color_changed(state, 4, background) or changed
+  local offset, syntax = 8, theme.syntax
+  for _, key in ipairs(syntax_keys) do
+    changed = M.color_changed(state, offset, syntax and syntax[key]) or changed
+    offset = offset + 4
+  end
+  for _, key in ipairs(style_keys) do
+    changed = M.color_changed(state, offset, theme[key]) or changed
+    offset = offset + 4
+  end
+  return changed
+end
+
 ---Generate readable theme colors; Lua indices 1..16 map to ANSI indices 0..15.
 ---@param theme table
 ---@param foreground integer[]

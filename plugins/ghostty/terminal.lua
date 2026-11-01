@@ -87,6 +87,43 @@ local function dimension(value, default)
   return common.clamp(math.floor(tonumber(value) or default), 1, 65535)
 end
 
+---Own every output buffer used by the render queries, including pointers.
+---@param terminal plugins.ghostty.Terminal
+---@return table scratch
+local function render_scratch(terminal)
+  local s = {
+    colors = sized("GhosttyRenderStateColors"),
+    cursor = sized("GhosttyRenderStateCursor"),
+    scrollbar = ffi.new("GhosttyTerminalScrollbar[1]"),
+    iterator = ffi.new("GhosttyRenderStateRowIterator[1]", terminal.iterator),
+    cells = ffi.new("GhosttyRenderStateRowCells[1]", terminal.cells),
+    style = sized("GhosttyStyle"),
+    bg = ffi.new("GhosttyColorRgb[1]"),
+    raw = ffi.new("GhosttyCellsView"),
+    wide = ffi.new("int[1]"),
+    row = ffi.new("uint16_t[1]"),
+    chars = ffi.new("uint8_t[64]"),
+    state_keys = ffi.new("GhosttyRenderStateData[3]", {
+      C.GHOSTTY_RENDER_STATE_DATA_COLORS,
+      C.GHOSTTY_RENDER_STATE_DATA_CURSOR,
+      C.GHOSTTY_RENDER_STATE_DATA_ROW_ITERATOR,
+    }),
+    row_keys = ffi.new("GhosttyRenderStateRowData[2]", {
+      C.GHOSTTY_RENDER_STATE_ROW_DATA_CELLS,
+      C.GHOSTTY_RENDER_STATE_ROW_DATA_CELLS_RAW,
+    }),
+    cell_keys = ffi.new("GhosttyRenderStateRowCellsData[2]", {
+      C.GHOSTTY_RENDER_STATE_ROW_CELLS_DATA_STYLE,
+      C.GHOSTTY_RENDER_STATE_ROW_CELLS_DATA_GRAPHEMES_UTF8,
+    }),
+  }
+  s.buffer = ffi.new("GhosttyBuffer", { ptr = s.chars, cap = 64 })
+  s.state_values = ffi.new("void *[3]", { s.colors, s.cursor, s.iterator })
+  s.row_values = ffi.new("void *[2]", { s.cells, s.raw })
+  s.cell_values = ffi.new("void *[2]", { s.style, s.buffer })
+  return s
+end
+
 ---Create native terminal resources and optionally start a child process.
 ---@param options? plugins.ghostty.options
 ---@return plugins.ghostty.Terminal
@@ -96,6 +133,9 @@ function Terminal.new(options)
     options = options,
     events = {},
     dirty = true,
+    metadata_dirty = true,
+    state_buffer = ffi.new("GhosttyString[1]"),
+    exit_status = ffi.new("int[2]"),
     writes = {},
     write_head = 1,
     write_tail = 0,
@@ -224,6 +264,7 @@ function Terminal:close()
     end
   end
   self.writes, self.pending_bytes = {}, 0
+  self.render_scratch = nil
 end
 
 function Terminal:set_colors(foreground, background, cursor)
@@ -379,6 +420,7 @@ function Terminal:feed(data)
   self.osc:feed(data)
   C.ghostty_terminal_vt_write(self.terminal, data, #data)
   self.dirty = true
+  self.metadata_dirty = true
 end
 
 ---Clear the screen and terminal modes after a program exits without cleanup.
@@ -393,7 +435,7 @@ function Terminal:reset()
 end
 
 function Terminal:state_string(key)
-  local value = ffi.new("GhosttyString[1]")
+  local value = self.state_buffer
   if
     C.ghostty_terminal_get(self.terminal, key, value) == 0
     and value[0].ptr ~= nil
@@ -429,10 +471,10 @@ function Terminal:poll_events()
     self:flush()
     -- Drain the final PTY output before announcing exit.
     if not self.exit_code and budget > 0 then
-      local code, signal = ffi.new("int[1]"), ffi.new("int[1]")
-      if pty.C.pgt_pty_poll(self.pty, code, signal) == 1 then
+      local status = self.exit_status
+      if pty.C.pgt_pty_poll(self.pty, status, status + 1) == 1 then
         self.exit_code, self.exit_signal =
-          tonumber(code[0]), tonumber(signal[0])
+          tonumber(status[0]), tonumber(status[1])
         self:emit {
           kind = "terminal-exited",
           code = self.exit_code,
@@ -441,16 +483,19 @@ function Terminal:poll_events()
       end
     end
   end
-  local title, cwd =
-    self:state_string(C.GHOSTTY_TERMINAL_DATA_TITLE),
-    self:state_string(C.GHOSTTY_TERMINAL_DATA_PWD)
-  if title and title ~= "" and title ~= self.last_title then
-    self.last_title = title
-    self:emit { kind = "title-changed", title = title }
-  end
-  if cwd and cwd ~= "" and cwd ~= self.last_cwd then
-    self.last_cwd = cwd
-    self:emit { kind = "cwd-changed", cwd = cwd }
+  if self.metadata_dirty then
+    self.metadata_dirty = false
+    local title, cwd =
+      self:state_string(C.GHOSTTY_TERMINAL_DATA_TITLE),
+      self:state_string(C.GHOSTTY_TERMINAL_DATA_PWD)
+    if title and title ~= "" and title ~= self.last_title then
+      self.last_title = title
+      self:emit { kind = "title-changed", title = title }
+    end
+    if cwd and cwd ~= "" and cwd ~= self.last_cwd then
+      self.last_cwd = cwd
+      self:emit { kind = "cwd-changed", cwd = cwd }
+    end
   end
   local events = self.events
   self.events = {}
@@ -883,223 +928,182 @@ local function rgb(value)
   return render_color(tonumber(value.r), tonumber(value.g), tonumber(value.b))
 end
 
+---Copy only the prefix already checked before the first changed cell.
+---@param previous? table Immutable row from the last snapshot.
+---@param cols integer Number of unchanged cells.
+---@param spans integer Number of unchanged spans.
+---@return table row
+local function copy_row_prefix(previous, cols, spans)
+  local row = { cells = {}, spans = {} }
+  if previous then
+    for i = 1, cols do row.cells[i] = previous.cells[i] end
+    for i = 1, spans do row.spans[i] = previous.spans[i] end
+  end
+  return row
+end
+
+---Read a dirty row, allocating Lua tables only when its contents change.
+---@param self plugins.ghostty.Terminal
+---@param s table Owned render-query buffers.
+---@param previous? table Immutable row from the last snapshot.
+---@param foreground integer[] Default foreground color.
+---@return table row
+local function render_row(self, s, previous, foreground)
+  local row = not previous and { spans = {}, cells = {} } or nil
+  local col, index = 0, 0
+  local style, buffer, chars = s.style, s.buffer, s.chars
+  local colors, bg, raw, wide = s.colors, s.bg, s.raw, s.wide
+  while C.ghostty_render_state_row_cells_next(self.cells) do
+    check(C.ghostty_cell_get(raw.ptr[col], C.GHOSTTY_CELL_DATA_WIDE, wide))
+    local width = wide[0] == C.GHOSTTY_CELL_WIDE_WIDE and 2 or 1
+    if wide[0] ~= C.GHOSTTY_CELL_WIDE_SPACER_TAIL then
+      index = index + 1
+      local result = C.ghostty_render_state_row_cells_get_multi(
+        self.cells, 2, s.cell_keys, s.cell_values, nil
+      )
+      if result == C.GHOSTTY_OUT_OF_SPACE then
+        chars = ffi.new("uint8_t[?]", buffer.len)
+        s.chars = chars
+        buffer.ptr, buffer.cap = chars, ffi.sizeof(chars)
+        result = C.ghostty_render_state_row_cells_get(
+          self.cells, C.GHOSTTY_RENDER_STATE_ROW_CELLS_DATA_GRAPHEMES_UTF8,
+          buffer
+        )
+      end
+      check(result)
+      local text = buffer.len > 0 and ffi.string(chars, buffer.len) or " "
+      local fore = foreground
+      if style.fg_color.tag == C.GHOSTTY_STYLE_COLOR_PALETTE then
+        fore = rgb(colors.palette[style.fg_color.value.palette])
+      elseif style.fg_color.tag == C.GHOSTTY_STYLE_COLOR_RGB then
+        fore = rgb(style.fg_color.value.rgb)
+      end
+      -- Blank cells can store their background outside the style. An absent
+      -- optional color returns INVALID_VALUE without writing the output.
+      bg[0] = colors.background
+      C.ghostty_render_state_row_cells_get(
+        self.cells, C.GHOSTTY_RENDER_STATE_ROW_CELLS_DATA_BG_COLOR, bg
+      )
+      local back = rgb(bg[0])
+      if style.inverse then fore, back = back, fore end
+      if style.invisible then fore = back end
+      if style.faint then
+        fore = render_color(
+          math.floor((fore[1] + back[1]) / 2),
+          math.floor((fore[2] + back[2]) / 2),
+          math.floor((fore[3] + back[3]) / 2)
+        )
+      end
+      local old = previous and previous.spans[index]
+      local same = old
+        and old.x == col
+        and old.width == width
+        and old.text == text
+        and old.fg == fore
+        and old.bg == back
+        and old.bold == style.bold
+        and old.italic == style.italic
+        and old.underline == (style.underline ~= 0)
+        and old.strikethrough == style.strikethrough
+      if not same and not row then
+        row = copy_row_prefix(previous, col, index - 1)
+      end
+      if row then
+        row.spans[index] = same and old or {
+          x = col,
+          width = width,
+          text = text,
+          fg = fore,
+          bg = back,
+          bold = style.bold,
+          italic = style.italic,
+          underline = style.underline ~= 0,
+          strikethrough = style.strikethrough,
+        }
+        row.cells[col + 1] = text
+      end
+    else
+      if not row and previous.cells[col + 1] ~= "" then
+        row = copy_row_prefix(previous, col, index)
+      end
+      if row then row.cells[col + 1] = "" end
+    end
+    col = col + 1
+  end
+  if not row and (#previous.cells ~= col or #previous.spans ~= index) then
+    row = copy_row_prefix(previous, col, index)
+  end
+  return row or previous
+end
+
 ---Build a snapshot with shared immutable rows, cells and colors.
 ---Dirty rows are checked for identical cells because TUIs often repaint them.
 ---@return table? snapshot
 function Terminal:update_render()
-  if self.closed then
-    return
-  end
+  if self.closed then return end
   check(C.ghostty_render_state_update(self.render, self.terminal))
-  local colors = sized("GhosttyRenderStateColors")
-  check(
-    C.ghostty_render_state_get(
-      self.render,
-      C.GHOSTTY_RENDER_STATE_DATA_COLORS,
-      colors
-    )
-  )
+  local s = self.render_scratch
+  if not s then
+    s = render_scratch(self)
+    self.render_scratch = s
+  end
+  check(C.ghostty_render_state_get_multi(
+    self.render, 3, s.state_keys, s.state_values, nil
+  ))
+  local colors, cursor, scrollbar = s.colors, s.cursor, s.scrollbar
   local snapshot = {
     cols = self.cols,
     rows = self.rows,
     rows_data = {},
     background = rgb(colors.background),
     foreground = rgb(colors.foreground),
-  }
-
-  ---@param key string Render-state query suffix.
-  ---@param ctype string C output type for this query.
-  ---@return number|boolean|ffi.cdata
-  local function get(key, ctype)
-    local out = ffi.new(ctype .. "[1]")
-    check(
-      C.ghostty_render_state_get(
-        self.render,
-        C["GHOSTTY_RENDER_STATE_DATA_" .. key],
-        out
-      )
-    )
-    return out[0]
-  end
-
-  snapshot.cursor = {
-    visible = get("CURSOR_VISIBLE", "bool")
-      and get("CURSOR_VIEWPORT_HAS_VALUE", "bool"),
-    color = colors.cursor_has_value and rgb(colors.cursor) or nil,
+    cursor = {
+      visible = cursor.visible and cursor.viewport_has_value,
+      color = colors.cursor_has_value and rgb(colors.cursor) or nil,
+    },
   }
   if snapshot.cursor.visible then
-    snapshot.cursor.x, snapshot.cursor.y =
-      tonumber(get("CURSOR_VIEWPORT_X", "uint16_t")),
-      tonumber(get("CURSOR_VIEWPORT_Y", "uint16_t"))
-    snapshot.cursor.shape = tonumber(get("CURSOR_VISUAL_STYLE", "int"))
+    snapshot.cursor.x = tonumber(cursor.viewport_x)
+    snapshot.cursor.y = tonumber(cursor.viewport_y)
+    snapshot.cursor.shape = tonumber(cursor.visual_style)
   end
-  local scrollbar = ffi.new("GhosttyTerminalScrollbar[1]")
-  check(
-    C.ghostty_terminal_get(
-      self.terminal,
-      C.GHOSTTY_TERMINAL_DATA_SCROLLBAR,
-      scrollbar
-    )
-  )
+  check(C.ghostty_terminal_get(
+    self.terminal, C.GHOSTTY_TERMINAL_DATA_SCROLLBAR, scrollbar
+  ))
   snapshot.scrollbar = {
     total = tonumber(scrollbar[0].total),
     offset = tonumber(scrollbar[0].offset),
     len = tonumber(scrollbar[0].len),
   }
-  local iterator = ffi.new("GhosttyRenderStateRowIterator[1]", self.iterator)
-  check(
-    C.ghostty_render_state_get(
-      self.render,
-      C.GHOSTTY_RENDER_STATE_DATA_ROW_ITERATOR,
-      iterator
-    )
-  )
-  local cells = ffi.new("GhosttyRenderStateRowCells[1]", self.cells)
-  local style = sized("GhosttyStyle")
-  local fg, bg = ffi.new("GhosttyColorRgb[1]"), ffi.new("GhosttyColorRgb[1]")
-  local raw, wide = ffi.new("GhosttyCellsView"), ffi.new("int[1]")
-  local chars = ffi.new("uint8_t[64]")
-  local buffer =
-    ffi.new("GhosttyBuffer", { ptr = chars, cap = ffi.sizeof(chars) })
-  local keys = ffi.new("GhosttyRenderStateRowCellsData[2]", {
-    C.GHOSTTY_RENDER_STATE_ROW_CELLS_DATA_STYLE,
-    C.GHOSTTY_RENDER_STATE_ROW_CELLS_DATA_GRAPHEMES_UTF8,
-  })
-  -- The locals above own the memory referenced by this pointer array.
-  local values = ffi.new("void *[2]", { style, buffer })
-  local clean, row_dirty = ffi.new("bool[1]"), ffi.new("bool[1]")
-  local row_index = 0
-  while C.ghostty_render_state_row_iterator_next(self.iterator) do
-    row_index = row_index + 1
-    check(
-      C.ghostty_render_state_row_get(
-        self.iterator,
-        C.GHOSTTY_RENDER_STATE_ROW_DATA_DIRTY,
-        row_dirty
-      )
-    )
-    local previous = self.snapshot and self.snapshot.rows_data[row_index]
-    if previous and not row_dirty[0] then
-      snapshot.rows_data[row_index] = previous
-    else
-      local row, col = { spans = {}, cells = {} }, 0
-      local unchanged = previous ~= nil
-      check(
-        C.ghostty_render_state_row_get(
-          self.iterator,
-          C.GHOSTTY_RENDER_STATE_ROW_DATA_CELLS,
-          cells
-        )
-      )
-      -- Borrow the entire row only until the next render-state update.
-      check(
-        C.ghostty_render_state_row_get(
-          self.iterator,
-          C.GHOSTTY_RENDER_STATE_ROW_DATA_CELLS_RAW,
-          raw
-        )
-      )
-      while C.ghostty_render_state_row_cells_next(self.cells) do
-        check(C.ghostty_cell_get(raw.ptr[col], C.GHOSTTY_CELL_DATA_WIDE, wide))
-        local width = wide[0] == C.GHOSTTY_CELL_WIDE_WIDE and 2 or 1
-        if wide[0] ~= C.GHOSTTY_CELL_WIDE_SPACER_TAIL then
-          local result = C.ghostty_render_state_row_cells_get_multi(
-            self.cells,
-            2,
-            keys,
-            values,
-            nil
-          )
-          if result == C.GHOSTTY_OUT_OF_SPACE then
-            chars = ffi.new("uint8_t[?]", buffer.len)
-            buffer.ptr, buffer.cap = chars, ffi.sizeof(chars)
-            result = C.ghostty_render_state_row_cells_get(
-              self.cells,
-              C.GHOSTTY_RENDER_STATE_ROW_CELLS_DATA_GRAPHEMES_UTF8,
-              buffer
-            )
-          end
-          check(result)
-          local text = buffer.len > 0 and ffi.string(chars, buffer.len) or " "
-          fg[0], bg[0] = colors.foreground, colors.background
-          -- A default color returns INVALID_VALUE. Keep these separate:
-          -- get_multi stops at the first absent optional value.
-          C.ghostty_render_state_row_cells_get(
-            self.cells,
-            C.GHOSTTY_RENDER_STATE_ROW_CELLS_DATA_FG_COLOR,
-            fg
-          )
-          C.ghostty_render_state_row_cells_get(
-            self.cells,
-            C.GHOSTTY_RENDER_STATE_ROW_CELLS_DATA_BG_COLOR,
-            bg
-          )
-          local fore, back = rgb(fg[0]), rgb(bg[0])
-          if style.inverse then
-            fore, back = back, fore
-          end
-          if style.invisible then
-            fore = back
-          end
-          if style.faint then
-            fore = render_color(
-              math.floor((fore[1] + back[1]) / 2),
-              math.floor((fore[2] + back[2]) / 2),
-              math.floor((fore[3] + back[3]) / 2)
-            )
-          end
-          local index = #row.spans + 1
-          local old = previous and previous.spans[index]
-          local same = old
-            and old.x == col
-            and old.width == width
-            and old.text == text
-            and old.fg == fore
-            and old.bg == back
-            and old.bold == style.bold
-            and old.italic == style.italic
-            and old.underline == (style.underline ~= 0)
-            and old.strikethrough == style.strikethrough
-          row.spans[index] = same and old
-            or {
-              x = col,
-              width = width,
-              text = text,
-              fg = fore,
-              bg = back,
-              bold = style.bold,
-              italic = style.italic,
-              underline = style.underline ~= 0,
-              strikethrough = style.strikethrough,
-            }
-          unchanged = unchanged and same
-          row.cells[col + 1] = text
-        else
-          row.cells[col + 1] = ""
-        end
-        col = col + 1
-      end
-      snapshot.rows_data[row_index] = unchanged
-          and #previous.cells == col
-          and #previous.spans == #row.spans
-          and previous
-        or row
+  local previous = self.snapshot
+  if previous then
+    for i, row in ipairs(previous.rows_data) do
+      snapshot.rows_data[i] = row
     end
-    check(
-      C.ghostty_render_state_row_set(
-        self.iterator,
-        C.GHOSTTY_RENDER_STATE_ROW_OPTION_DIRTY,
-        clean
-      )
+  end
+  local row_index = 0
+  while true do
+    if previous then
+      if not C.ghostty_render_state_row_iterator_next_dirty(
+        self.iterator, s.row
+      ) then break end
+      row_index = tonumber(s.row[0]) + 1
+    else
+      if not C.ghostty_render_state_row_iterator_next(self.iterator) then
+        break
+      end
+      row_index = row_index + 1
+    end
+    -- The raw row pointer is borrowed only until the next state update.
+    check(C.ghostty_render_state_row_get_multi(
+      self.iterator, 2, s.row_keys, s.row_values, nil
+    ))
+    snapshot.rows_data[row_index] = render_row(
+      self, s, previous and previous.rows_data[row_index], snapshot.foreground
     )
   end
-  check(
-    C.ghostty_render_state_set(
-      self.render,
-      C.GHOSTTY_RENDER_STATE_OPTION_DIRTY,
-      ffi.new("int[1]", C.GHOSTTY_RENDER_STATE_DIRTY_FALSE)
-    )
-  )
+  s.raw.ptr, s.raw.len = nil, 0
+  check(C.ghostty_render_state_clean(self.render))
   self.snapshot = snapshot
   return snapshot
 end

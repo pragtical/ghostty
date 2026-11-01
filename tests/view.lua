@@ -13,6 +13,7 @@ package.path = root .. "/?.lua;" .. root .. "/?/init.lua;" .. package.path
 local ghostty = require "plugins.ghostty"
 local click = require "plugins.ghostty.click_to_open"
 local selection = require "plugins.ghostty.selection"
+local palette = require "plugins.ghostty.palette"
 
 ---@param view plugins.ghostty.TerminalView
 ---@return string Queued terminal input, removed after reading.
@@ -177,6 +178,28 @@ test.describe("Ghostty Pragtical integration", function()
   )
 
   test.it(
+    "tracks theme channel edits and missing accents without string keys",
+    function()
+      local state, theme = {}, { syntax = { keyword = { 100, 150, 200 } } }
+      local fg, bg = { 220, 220, 220 }, { 20, 20, 20 }
+      test.ok(palette.changed(state, theme, fg, bg))
+      test.ok(not palette.changed(state, theme, fg, bg))
+      theme.syntax.keyword[4] = 80
+      test.ok(palette.changed(state, theme, fg, bg))
+      test.ok(not palette.changed(state, theme, fg, bg))
+      theme.syntax.keyword = nil
+      test.ok(palette.changed(state, theme, fg, bg))
+      theme.syntax = nil
+      test.ok(not palette.changed(state, theme, fg, bg))
+      theme.accent = { 150, 100, 200 }
+      test.ok(palette.changed(state, theme, fg, bg))
+      fg[1], bg[3] = 210, 30
+      test.ok(palette.changed(state, theme, fg, bg))
+      test.ok(not palette.changed(state, theme, fg, bg))
+    end
+  )
+
+  test.it(
     "opens a terminal tab in the current project and draws cell backgrounds",
     function(context)
       local view = context.view
@@ -265,6 +288,57 @@ test.describe("Ghostty Pragtical integration", function()
       test.equal(texts[2][1], "é")
       test.equal(texts[2][2], view.position.x + 4 * view.cell_width)
       test.equal(texts[3][1], "界") -- Cursor redraws the entire wide glyph.
+    end
+  )
+
+  test.it(
+    "reuses drawing arrays and respects fractional fonts and resized grids",
+    function(context)
+      local view = context.view
+      local size = style.code_font:get_size() + 0.25
+      view.options.font = renderer.font.group {
+        style.code_font:copy(size), style.code_font:copy(size),
+      }
+      view.terminal:feed("\27[?25l\27[1mA\27[0m界é")
+      view:update()
+      local original, calls = renderer.draw_text, {}
+
+      renderer.draw_text = function(font, text, x, y, color)
+        calls[#calls + 1] = { font = font, text = text, x = x, y = y }
+        return original(font, text, x, y, color)
+      end
+
+      local ok, err = pcall(function()
+
+        local function draw()
+          calls = {}
+          renderer.begin_frame(core.window)
+          view:draw()
+          renderer.end_frame()
+        end
+
+        draw()
+        local rows, first = view.drawing_rows, view.drawing_rows[1]
+        view.position.x = view.position.x + 7
+        draw()
+        test.equal(view.drawing_rows, rows)
+        test.equal(view.drawing_rows[1], first)
+        test.equal(calls[1].font, view.bold_font)
+        test.equal(calls[2].x, view.position.x + view.cell_width)
+        test.equal(calls[3].x, view.position.x + 3 * view.cell_width)
+        test.equal(calls[3].text, "é")
+        local bold = view.bold_font
+        view.options.font:set_size(size + 2.5)
+        view.size.y = 2 * view.options.font:get_height()
+        view:update()
+        draw()
+        test.ok(view.bold_font ~= bold)
+        test.equal(#view.drawing_rows, view.rows)
+        test.equal(calls[2].x, view.position.x + view.cell_width)
+        test.equal(calls[3].x, view.position.x + 3 * view.cell_width)
+      end)
+      renderer.draw_text = original
+      test.ok(ok, err)
     end
   )
 

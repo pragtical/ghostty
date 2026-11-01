@@ -70,8 +70,8 @@ function TerminalView:new(options)
     background = self.options.background or style.background,
     cursor = self.options.cursor or style.caret,
   })
-  self.palette_key =
-    palette.signature(style, spawn.foreground, spawn.background)
+  self.palette_state, self.color_state, self.palette_key = {}, {}, 0
+  palette.changed(self.palette_state, style, spawn.foreground, spawn.background)
   spawn.palette = palette.generate(style, spawn.foreground, spawn.background)
   if self.options.terminfo then
     spawn.env =
@@ -198,14 +198,11 @@ function TerminalView:poll()
       self.pressed, self.pending_key = {}, nil
     end
   end
-  local node = core.root_view.root_node:get_node_for_view(self)
-  if
-    self.terminal:is_dirty()
-    and node
-    and node.active_view == self
-    and self.size.y > 0
-  then
-    core.redraw = true
+  if self.terminal:is_dirty() and self.size.y > 0 then
+    local node = core.root_view.root_node:get_node_for_view(self)
+    if node and node.active_view == self then
+      core.redraw = true
+    end
   end
   if
     self.exited
@@ -342,19 +339,15 @@ function TerminalView:update()
     self.options.foreground or style.text,
     self.options.background or style.background,
     self.options.cursor or style.caret
-  local colors = table.concat(fg, ",")
-    .. ";"
-    .. table.concat(bg, ",")
-    .. ";"
-    .. table.concat(cursor, ",")
-  if colors ~= self.colors then
+  local changed = palette.color_changed(self.color_state, 0, fg)
+  changed = palette.color_changed(self.color_state, 4, bg) or changed
+  changed = palette.color_changed(self.color_state, 8, cursor) or changed
+  if changed then
     self.terminal:set_colors(fg, bg, cursor)
-    self.colors = colors
   end
-  local palette_key = palette.signature(style, fg, bg)
-  if palette_key ~= self.palette_key then
+  if palette.changed(self.palette_state, style, fg, bg) then
     self.terminal:set_palette(palette.generate(style, fg, bg))
-    self.palette_key = palette_key
+    self.palette_key = self.palette_key + 1
   end
   if self.terminal:is_dirty() or not self.snapshot then
     self.snapshot = self.terminal:update_render()
@@ -407,14 +400,14 @@ function TerminalView:draw()
     self.bold_italic_font =
       font:copy(self.font_size, { bold = true, italic = true })
   end
-  local previous_rows = self.drawing_rows or {}
-  self.drawing_rows = {}
+  local drawing_rows = self.drawing_rows or {}
+  self.drawing_rows = drawing_rows
   for row_index, row in ipairs(self.snapshot.rows_data) do
-    local drawing = previous_rows[row_index]
+    local drawing = drawing_rows[row_index]
     if not drawing or drawing.row ~= row then
       drawing = drawing_row(row)
     end
-    self.drawing_rows[row_index] = drawing
+    drawing_rows[row_index] = drawing
     local y = self.position.y + (row_index - 1) * self.cell_height
     for _, span in ipairs(drawing.backgrounds) do
       if span.bg ~= self.snapshot.background then
@@ -460,6 +453,9 @@ function TerminalView:draw()
         )
       end
     end
+  end
+  for i = #self.snapshot.rows_data + 1, #drawing_rows do
+    drawing_rows[i] = nil
   end
   local cursor = self.snapshot.cursor
   if cursor.visible then

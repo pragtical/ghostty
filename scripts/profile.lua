@@ -2,6 +2,7 @@
 -- See AGENTS.md for capture/replay commands and environment options.
 local source = debug.getinfo(1, "S").source:sub(2)
 local root = source:match("^(.*)[/\\]scripts[/\\]") or "."
+root = os.getenv("GHOSTTY_PROFILE_PLUGIN") or root
 package.path = root .. "/?.lua;" .. root .. "/?/init.lua;" .. package.path
 local core = require "core"
 local renderer = require "renderer"
@@ -12,14 +13,40 @@ assert(
   not package.loaded["plugins.ghostty"],
   "Use a fresh PRAGTICAL_USERDIR to avoid profiling an installed plugin"
 )
-local ghostty = require "plugins.ghostty"
 local mode = os.getenv("GHOSTTY_PROFILE_MODE") or "capture"
 local prefix = os.getenv("GHOSTTY_PROFILE_OUTPUT") or "/tmp/ghostty-profile"
+local count_calls = os.getenv("GHOSTTY_PROFILE_CALLS") == "1"
+local native_calls = {}
+if count_calls then
+  local runtime = require "plugins.ghostty.runtime"
+  local native = runtime.C
+  runtime.C = setmetatable({}, {
+
+    ---@param proxy table
+    ---@param key string Native symbol or enum name.
+    __index = function(proxy, key)
+      local value = native[key]
+      if key:match("^ghostty_") then
+        local call = value
+
+        value = function(...)
+          native_calls[key] = (native_calls[key] or 0) + 1
+          return call(...)
+        end
+      end
+      rawset(proxy, key, value)
+      return value
+    end,
+  })
+end
+local ghostty = require "plugins.ghostty"
 local recording = os.getenv("GHOSTTY_PROFILE_INPUT") or prefix .. ".frames"
 local repeats = tonumber(os.getenv("GHOSTTY_PROFILE_REPEATS")) or 10
 assert(repeats >= 1 and repeats % 1 == 0, "repeats must be a positive integer")
 local width, height = 1600, 900
 local frames, samples = {}, {}
+local sessions = {}
+local iterations, retained_before, retained_after
 local view, window
 local trace_file = os.getenv("GHOSTTY_PROFILE_TRACE")
 if trace_file then
@@ -40,6 +67,34 @@ local function create_view(command)
   view = ghostty.new_terminal { command = command, close_on_exit = "never" }
   view.size.x, view.size.y = width, height
   view:update()
+  sessions[view] = true
+end
+
+---Close a benchmark session without retaining it during later repeats.
+---@param terminal_view plugins.ghostty.TerminalView
+local function close_view(terminal_view)
+  terminal_view:close()
+  sessions[terminal_view] = nil
+end
+
+---Collect stable memory and VM-state samples after warming the workload.
+local function start_profile()
+  samples, native_calls = {}, {}
+  collectgarbage("collect")
+  retained_before = collectgarbage("count")
+  if not count_calls then
+    profiler.start(
+      os.getenv("GHOSTTY_PROFILE_FORMAT") or "vf3i1m1",
+      prefix .. ".jit.txt"
+    )
+  end
+end
+
+---Stop sampling before collecting retained Lua memory, including samples.
+local function stop_profile()
+  profiler.stop()
+  collectgarbage("collect")
+  retained_after = collectgarbage("count")
 end
 
 ---Submit and render a complete terminal frame, including the native renderer.
@@ -133,12 +188,8 @@ local function replay()
     view.terminal:feed(data)
     draw(false)
   end
-  view:close()
-  samples = {}
-  profiler.start(
-    os.getenv("GHOSTTY_PROFILE_FORMAT") or "fl3i1m1",
-    prefix .. ".jit.txt"
-  )
+  close_view(view)
+  start_profile()
   for _ = 1, repeats do
     create_view(false)
     for _, data in ipairs(frames) do
@@ -148,10 +199,79 @@ local function replay()
       draw()
     end
     if _ < repeats then
-      view:close()
+      close_view(view)
     end
   end
-  profiler.stop()
+  stop_profile()
+end
+
+---Exercise deterministic output and idle sessions independently of btop.
+local function exercise()
+  local workload = os.getenv("GHOSTTY_PROFILE_WORKLOAD") or "redraw"
+  local idle = workload == "idle" or workload == "sessions"
+  iterations = tonumber(os.getenv("GHOSTTY_PROFILE_ITERATIONS"))
+    or (idle and 100000 or 1000)
+  assert(iterations >= 1 and iterations % 1 == 0, "invalid iteration count")
+  create_view(false)
+  local lines = {}
+  for i = 1, view.rows do
+    lines[i] = string.rep("abc123 ", math.floor(view.cols / 7))
+  end
+  local repaint = "\27[H" .. table.concat(lines, "\r\n")
+  local live = {}
+  if workload == "sessions" then
+    for _ = 1, 6 do
+      create_view(PLATFORM == "Windows" and { "cmd.exe", "/d", "/q" }
+        or { "/bin/sh", "-i" })
+      live[#live + 1] = view
+    end
+    -- Allow startup output to arrive before measuring empty polls.
+    for _ = 1, 20 do
+      for _, terminal_view in ipairs(live) do terminal_view:poll() end
+      system.sleep(0.005)
+    end
+  elseif workload == "scroll" then
+    for i = 1, 1000 do
+      view.terminal:feed(string.format("history line %04d\r\n", i))
+    end
+  else
+    assert(idle or workload == "redraw" or workload == "stream"
+      or workload == "unicode", "invalid workload")
+  end
+
+  ---@param i integer Deterministic workload step.
+  ---@param measure boolean Whether to retain timing samples.
+  local function step(i, measure)
+    local start = system.get_time()
+    if workload == "idle" then
+      view:update()
+      if measure then sample("update", system.get_time() - start) end
+    elseif workload == "sessions" then
+      for _, terminal_view in ipairs(live) do terminal_view:poll() end
+      if measure then sample("poll", system.get_time() - start) end
+    else
+      if workload == "redraw" then
+        view.terminal:feed(repaint)
+      elseif workload == "stream" then
+        view.terminal:feed(string.rep(
+          "build line " .. i .. " complete\r\n", 32
+        ))
+      elseif workload == "unicode" then
+        view.terminal:feed("\27[H" .. string.rep(
+          "\27[38;2;12;34;56m界é🙂\27[0m " .. i .. "\r\n", view.rows
+        ))
+      else
+        view.terminal:scroll_to((i % 100) * 7)
+      end
+      if measure then sample("feed", system.get_time() - start) end
+      draw(measure)
+    end
+  end
+
+  for i = 1, 100 do step(i, false) end
+  start_profile()
+  for i = 1, iterations do step(i, true) end
+  stop_profile()
 end
 
 ---Count calls outside the measured run to avoid instrumenting every cell.
@@ -169,8 +289,9 @@ local function report()
     return text(...)
   end
 
-  draw(false)
+  local ok, err = pcall(draw, false)
   renderer.draw_rect, renderer.draw_text = rect, text
+  assert(ok, err)
   assert(
     renderer.to_canvas(window, 0, 0, width, height):save_image(prefix .. ".png")
   )
@@ -179,14 +300,16 @@ local function report()
     "%dx%d cells; %d frames x %d repeats; %d rects/%d texts in final frame\n",
     view.cols,
     view.rows,
-    #frames,
+    iterations or #frames,
     mode == "replay" and repeats or 1,
     rects,
     texts
   )
   file:write(header)
   print(header)
-  for _, name in ipairs { "feed", "snapshot", "draw", "present", "frame" } do
+  local phases = { "feed", "snapshot", "draw", "present", "frame",
+    "update", "poll" }
+  for _, name in ipairs(phases) do
     local values = samples[name]
     if values then
       table.sort(values)
@@ -206,13 +329,33 @@ local function report()
       print(line)
     end
   end
+  if retained_before then
+    local memory = string.format(
+      "Lua memory after collection: %.1f -> %.1f KiB (includes samples)\n",
+      retained_before, retained_after
+    )
+    file:write(memory)
+    print(memory)
+  end
+  if count_calls then
+    file:write("Instrumented run: timings are not comparable.\n")
+    local names = {}
+    for name in pairs(native_calls) do names[#names + 1] = name end
+    table.sort(names)
+    for _, name in ipairs(names) do
+      file:write(string.format("%s: %d calls\n", name, native_calls[name]))
+    end
+  end
   file:close()
 end
 
 local ok, err = xpcall(function()
-  assert(mode == "capture" or mode == "replay", "invalid profile mode")
+  assert(mode == "capture" or mode == "replay" or mode == "exercise",
+    "invalid profile mode")
   if mode == "capture" then
     capture()
+  elseif mode == "exercise" then
+    exercise()
   else
     replay()
   end
@@ -220,10 +363,11 @@ local ok, err = xpcall(function()
 end, debug.traceback)
 profiler.stop()
 if trace_file then
-  require("jit.v").stop()
+  require("jit.v").off()
 end
-if view then
-  view:close()
+for terminal_view in pairs(sessions) do
+  local closed, message = pcall(terminal_view.close, terminal_view)
+  if ok and not closed then ok, err = false, message end
 end
 assert(ok, err)
 print("Ghostty profiling complete: " .. prefix)
