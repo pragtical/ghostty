@@ -111,8 +111,8 @@ config.plugins.ghostty.poll_interval = 0.005
 Polling follows the current FPS setting by default, including Auto FPS. Set
 `poll_interval = nil` to restore this behavior after using a fixed interval.
 
-The default shell comes from `SHELL` or Windows' `COMSPEC`, falling back to
-`/bin/sh` or `cmd.exe`. You can choose another shell, such as `/bin/zsh` or
+Windows uses `COMSPEC` or `cmd.exe` as the default shell. Linux and macOS use
+`SHELL` or `/bin/sh`. You can choose another shell, such as `/bin/zsh` or
 `pwsh.exe`, in Settings. Set `arguments` to a list of startup flags, or `{}` to
 suppress the defaults.
 

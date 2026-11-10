@@ -20,8 +20,9 @@ local macos = PLATFORM == "Mac OS X"
 ---@field rows? integer Initial grid height in cells.
 ---@field max_scrollback? integer Maximum number of scrollback lines.
 local defaults = {
-  shell = os.getenv("SHELL")
-    or (windows and (os.getenv("COMSPEC") or "cmd.exe"))
+  -- Wine can inherit a Unix SHELL path from its host.
+  shell = windows and (os.getenv("COMSPEC") or "cmd.exe")
+    or os.getenv("SHELL")
     or "/bin/sh",
   -- nil selects flags for the configured shell; a table overrides them.
   arguments = nil,

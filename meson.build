@@ -1,4 +1,4 @@
-project('ghostty', 'c', version: '0.3.0', license: 'MIT',
+project('ghostty', 'c', version: '0.3.1', license: 'MIT',
   meson_version: '>= 0.60', default_options: ['c_std=c11', 'warning_level=2'])
 
 platform = host_machine.system()
@@ -49,6 +49,9 @@ test('pty', pty_test, timeout: 60)
 abi_test = executable('abi-probe', 'tests/abi.c', dependencies: ghostty_dep)
 luajit = find_program('luajit', required: false)
 if luajit.found() and not meson.is_cross_build()
+  test('configuration', luajit,
+    args: [meson.project_source_root() / 'tests/config.lua'],
+    workdir: meson.project_source_root())
   test('terminal-ffi', luajit,
     args: [meson.project_source_root() / 'tests/backend.lua'],
     env: ['GHOSTTY_RUNTIME=' + vt.full_path(),

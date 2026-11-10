@@ -63,6 +63,7 @@ Plugin-manager `latest` URLs require a successful versioned release.
 | `scripts/profile.lua` | Capture btop and replay its frames with Pragtical's bundled jit.p |
 | `scripts/test-windows.lua` | Run the Lua suites in Windows Pragtical, including under Wine |
 | `tests/abi.c` | C sizes and offsets used to check the FFI declarations |
+| `tests/config.lua` | Platform defaults and explicit configuration overrides |
 | `tests/pty.c`, `tests/pty_windows.c` | Native transport integration tests |
 | `tests/backend.lua`, `tests/view.lua` | FFI backend and Pragtical UI integration tests |
 | `.github/workflows/build.yml`, `manifest.json` | Build/release workflow and plugin-manager installation metadata |
@@ -261,6 +262,9 @@ version if the contract becomes incompatible.
   case-insensitively, and supplies a sorted Unicode environment block.
 - Resolves executables using the child's PATH/cwd. Ordinary arguments use Windows
   CRT quoting; `cmd /s /c` command strings need their separate quoting path.
+- Defaults to `COMSPEC` or `cmd.exe`, ignoring inherited Unix `SHELL` values.
+  Wine can inherit `/bin/zsh` from Linux; passing that executable to ConPTY can
+  fail with misleading `ERROR_INVALID_HANDLE` during process creation.
 - Creates the process suspended, assigns it to a kill-on-close job, then resumes
   it. This allows cleanup of descendants as well as the initial shell.
 - Sets `STARTF_USESTDHANDLES` with null child standard handles so ConPTY supplies
@@ -300,7 +304,7 @@ arrangement; upstream source does not belong in a vendor directory.
   `4a5d516c161b5543204dd9ce923b841b049ad9d46614b6bd28ee714148d085ac`.
 - The overlay identifies the VT library as `0.1.0-dev`. Upstream's application
   version remains `1.3.2-dev`; the library has its own version. This plugin's
-  version is `0.3.0` in both `meson.build` and `manifest.json`.
+  version is `0.3.1` in both `meson.build` and `manifest.json`.
 - `subprojects/packagefiles/ghostty/build-vt.py` checks the Zig version and runs
   `zig build` with `-Demit-lib-vt=true`, `-Demit-xcframework=false`,
   `-Doptimize=ReleaseFast`, `-Dtarget=...`, and `-Dcpu=baseline`.
@@ -504,6 +508,10 @@ from `../pragtical/data` by default. For another checkout or installation, set
 `PRAGTICAL_DATA_DIR=/path/to/pragtical/data` when running LuaJIT or `meson test`.
 They need only these Lua files, without building Pragtical. Editor tests use the
 running editor's core modules. `tests/view.lua` requires the editor.
+
+`luajit tests/config.lua` tests the real configuration module in isolation,
+including Windows launched with an inherited Unix `SHELL`. Meson runs this
+suite alongside the standalone backend tests.
 
 Meson sets `GHOSTTY_RUNTIME`, `GHOSTTY_PTY_RUNTIME`, and `GHOSTTY_ABI_PROBE` for its
 LuaJIT test. The last variable names the C probe executable; without it, the
@@ -723,7 +731,7 @@ Configuration lives in `config.plugins.ghostty`. Important defaults:
 
 | Setting | Default / behavior |
 | --- | --- |
-| `shell` | `SHELL`, then Windows `COMSPEC`, then `cmd.exe` on Windows or `/bin/sh` elsewhere |
+| `shell` | Windows: `COMSPEC` or `cmd.exe`; Linux/macOS: `SHELL` or `/bin/sh` |
 | `arguments`, `command_arguments` | `nil`, selecting flags for the shell |
 | `environment` | Empty table, merged with inherited process environment |
 | `env` | Additional overrides taking precedence over `environment` |
