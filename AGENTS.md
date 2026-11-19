@@ -304,7 +304,7 @@ arrangement; upstream source does not belong in a vendor directory.
   `4a5d516c161b5543204dd9ce923b841b049ad9d46614b6bd28ee714148d085ac`.
 - The overlay identifies the VT library as `0.1.0-dev`. Upstream's application
   version remains `1.3.2-dev`; the library has its own version. This plugin's
-  version is `0.3.1` in both `meson.build` and `manifest.json`.
+  version is `0.4.0` in both `meson.build` and `manifest.json`.
 - `subprojects/packagefiles/ghostty/build-vt.py` checks the Zig version and runs
   `zig build` with `-Demit-lib-vt=true`, `-Demit-xcframework=false`,
   `-Doptimize=ReleaseFast`, `-Dtarget=...`, and `-Dcpu=baseline`.
@@ -837,7 +837,14 @@ end)
 ```
 
 `ghostty.new_terminal(options)` constructs a TerminalView; the class is exported
-as `ghostty.TerminalView`. Event callbacks run on the editor thread and listener
+as `ghostty.TerminalView`. For a caller-owned drawer, `ghostty.new_task_view()`
+creates an idle screen. Start each stage with
+`view:start_task(argv, { cwd = path, environment = overrides, on_output = observe, on_exit = done })`.
+The owner can start the next child in `done(status)`. The same screen retains
+scrollback between children. Use `view:stop_task(false)` for Ctrl+C or
+`view:stop_task(true)` to release the active PTY.
+
+Event callbacks run on the editor thread and listener
 errors do not stop polling. Events are `terminal-created`, `terminal-closed`,
 `terminal-exited`, `title-changed`, `cwd-changed`, `bell`, `notification`,
 `clipboard-write-request`, `clipboard-write-accepted`, `clipboard-write-denied`,

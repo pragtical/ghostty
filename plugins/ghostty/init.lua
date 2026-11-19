@@ -96,12 +96,51 @@ function TerminalView:set_target_size(axis, value)
   return true
 end
 
+-- Detach before notifying the owner, which may immediately start the next stage.
+local function finish_task(view, status, force)
+  local task = view.task
+  if not task then return end
+  view.task = nil
+  view.terminal.on_output = nil
+  view.terminal:release_process(force)
+  if task.on_exit then core.try(task.on_exit, status) end
+end
+
+---Run an argv command on an idle task view and retain the transcript on exit.
+---@param argv string[]
+---@param options {cwd?:string, environment?:table<string,string>, on_output?:fun(chunk:string), on_exit?:fun(status:integer)}
+function TerminalView:start_task(argv, options)
+  assert(self.options.kind == "task" and views[self] and not self.task, "Task terminal is busy or closed")
+  self.terminal:start_process {
+    command = argv,
+    cwd = options.cwd or self.cwd,
+    environment = options.environment,
+  }
+  self.task = options
+  self.exited, self.exit_code, self.exit_signal = nil, nil, nil
+  if options.on_output then
+    self.terminal.on_output = function(chunk) core.try(options.on_output, chunk) end
+  end
+end
+
+---Interrupt the active task or release its process group immediately.
+---@param force boolean
+function TerminalView:stop_task(force)
+  if not self.task then return end
+  if force then
+    finish_task(self, 1, true)
+  else
+    self.terminal:write("\3")
+  end
+end
+
 ---Release this session's process and native handles; safe to call repeatedly.
 function TerminalView:close()
   views[self] = nil
   self.scrollbar_pressed = false
   self.v_scrollbar.dragging = false
   if self.terminal then
+    finish_task(self, 1, true)
     local terminal = self.terminal
     self.terminal = nil
     terminal:close()
@@ -133,6 +172,7 @@ local function handle_event(view, event)
     view.exited, view.exit_code, view.exit_signal =
       true, event.code, event.signal
     event.clean = event.code == 0 and event.signal == 0
+    finish_task(view, event.signal ~= 0 and 128 + event.signal or event.code)
   elseif event.kind == "notification" then
     core.log(
       "%s",
@@ -996,6 +1036,17 @@ end
 
 return {
   TerminalView = TerminalView,
+
+  ---Create an unattached task view. The caller owns its layout and lifetime.
+  ---@return plugins.ghostty.TerminalView
+  new_task_view = function()
+    return TerminalView {
+      kind = "task",
+      title = "Task Terminal",
+      command = false,
+      close_on_exit = "never",
+    }
+  end,
 
   ---@param options? plugins.ghostty.options
   ---@return plugins.ghostty.TerminalView

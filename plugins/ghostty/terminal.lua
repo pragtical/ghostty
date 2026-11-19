@@ -221,13 +221,7 @@ function Terminal.new(options)
       end
     )
     if options.command ~= false then
-      local spawn =
-        common.merge(options, { cols = self.cols, rows = self.rows })
-      local handle, message = pty.new(spawn)
-      if not handle then
-        error("Cannot start terminal: " .. message)
-      end
-      self.pty = handle
+      self:start_process(options)
     end
     self:resize(self.cols, self.rows, self.cell_width, self.cell_height)
   end)
@@ -237,6 +231,28 @@ function Terminal.new(options)
     error(err, 2)
   end
   return self
+end
+
+---Attach a fresh PTY to this screen, retaining its scrollback.
+---@param options plugins.ghostty.options Child command, environment and working directory.
+function Terminal:start_process(options)
+  assert(not self.closed and not self.pty, "Terminal already has a process")
+  local spawn = common.merge(options, { cols = self.cols, rows = self.rows })
+  local handle, message = pty.new(spawn, self.options)
+  assert(handle, "Cannot start terminal: " .. tostring(message))
+  self.pty = handle
+  self.eof, self.saw_exit, self.exit_code, self.exit_signal = nil, nil, nil, nil
+end
+
+---Release the PTY and any queued input while keeping the screen available.
+---@param force? boolean Kill the active task group.
+function Terminal:release_process(force)
+  if self.pty then
+    pty.close(self.pty, force and not self.saw_exit)
+    self.pty = nil
+  end
+  self.writes, self.write_head, self.write_tail = {}, 1, 0
+  self.write_offset, self.pending_bytes = 0, 0
 end
 
 function Terminal:emit(event)
@@ -252,10 +268,7 @@ function Terminal:close()
   end
   self.closed = true
   instances[self.id] = nil
-  if self.pty then
-    pty.C.pgt_pty_close(ffi.gc(self.pty, nil))
-    self.pty = nil
-  end
+  self:release_process()
   for i = #resources, 1, -1 do
     local entry = resources[i]
     if self[entry[1]] then
@@ -358,6 +371,9 @@ end
 ---@return boolean accepted
 ---@return string? reason
 function Terminal:write(data)
+  if self.options.kind == "task" and not self.pty then
+    return false, "No task is running"
+  end
   if self.closed or self.exit_code or self.eof then
     return false, "Terminal has exited"
   end
@@ -465,7 +481,9 @@ function Terminal:poll_events()
         self.eof = true
         break
       end
-      self:feed(ffi.string(self.read_buffer, count))
+      local chunk = ffi.string(self.read_buffer, count)
+      self:feed(chunk)
+      if self.on_output then self.on_output(chunk) end
       budget = budget - count
     end
     self:flush()
@@ -473,13 +491,18 @@ function Terminal:poll_events()
     if not self.exit_code and budget > 0 then
       local status = self.exit_status
       if pty.C.pgt_pty_poll(self.pty, status, status + 1) == 1 then
-        self.exit_code, self.exit_signal =
-          tonumber(status[0]), tonumber(status[1])
-        self:emit {
-          kind = "terminal-exited",
-          code = self.exit_code,
-          signal = self.exit_signal,
-        }
+        -- The child can exit between a would-block read and this poll. Give
+        -- its final bytes a read after exit even if another process owns the PTY.
+        if self.eof or self.saw_exit then
+          self.exit_code, self.exit_signal = tonumber(status[0]), tonumber(status[1])
+          -- Lifecycle events must survive a full queue of bells or notifications.
+          self.events[#self.events + 1] = {
+            kind = "terminal-exited",
+            code = self.exit_code,
+            signal = self.exit_signal,
+          }
+        end
+        self.saw_exit = true
       end
     end
   end

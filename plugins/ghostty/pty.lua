@@ -1,5 +1,4 @@
 local ffi = require "ffi"
-local common = require "core.common"
 local runtime = require "plugins.ghostty.runtime"
 local config = require "plugins.ghostty.config"
 local shell = require "plugins.ghostty.shell"
@@ -32,6 +31,19 @@ local C, path = runtime.load(
 assert(C.pgt_pty_abi() == 1, "Unsupported Ghostty PTY ABI")
 local M = { C = C, path = path }
 
+if ffi.os ~= "Windows" then ffi.cdef "int kill(int pid, int sig);" end
+
+---Release a PTY. Forced closes kill the foreground task group before reaping.
+---@param handle ffi.cdata Owned PTY handle
+---@param force boolean?
+function M.close(handle, force)
+  -- ConPTY closes the child job in its native waiter.
+  if force and ffi.os ~= "Windows" then
+    ffi.C.kill(-C.pgt_pty_pid(handle), 9)
+  end
+  C.pgt_pty_close(ffi.gc(handle, nil))
+end
+
 ---Keep the Lua strings alive while C uses the returned pointers.
 ---@param values string[]
 ---@return ffi.cdata Null-terminated argv-style pointer array.
@@ -49,9 +61,11 @@ end
 
 ---Start a PTY child with validated arguments and environment overrides.
 ---@param options plugins.ghostty.options
+---@param defaults? plugins.ghostty.options Settings inherited from the view.
 ---@return ffi.cdata? handle Owned handle with a close finalizer.
 ---@return string? error
-function M.new(options)
+function M.new(options, defaults)
+  defaults = defaults or config
   local argv = shell.argv(options)
   assert(
     type(argv) == "table" and #argv > 0,
@@ -62,22 +76,23 @@ function M.new(options)
     "Invalid working directory"
   )
   local env = {}
-  local overrides = common.merge(
-    common.merge(
-      { TERM = options.term or config.term, COLORTERM = "truecolor" },
-      options.environment or config.environment
-    ),
-    options.env
-  )
-  for key, value in pairs(overrides) do
-    assert(
-      type(key) == "string" and key ~= "" and not key:find("[=%z]"),
-      "Invalid environment key"
-    )
-    value = tostring(value)
-    assert(not value:find("%z"), "Invalid environment value")
-    env[#env + 1] = key .. "=" .. value
+  local overrides = { TERM = options.term or defaults.term or config.term, COLORTERM = "truecolor" }
+  local function overlay(values)
+    for key, value in pairs(values or {}) do
+      assert(
+        type(key) == "string" and key ~= "" and not key:find("[=%z]"),
+        "Invalid environment key"
+      )
+      value = tostring(value)
+      assert(not value:find("%z"), "Invalid environment value")
+      overrides[ffi.os == "Windows" and key:upper() or key] = value
+    end
   end
+  overlay(defaults.environment)
+  overlay(defaults.env)
+  overlay(options.environment)
+  overlay(options.env)
+  for key, value in pairs(overrides) do env[#env + 1] = key .. "=" .. value end
   local args, vars = strings(argv), strings(env)
   local error = ffi.new("char[512]")
   local handle = C.pgt_pty_new(
